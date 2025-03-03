@@ -6,6 +6,7 @@ from losses import sq_mahalanobis
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from linear_interpolants import Flow
+from plots import density_and_trajectories_plot
 
 
 class Interpolnet(nn.Module):
@@ -20,7 +21,7 @@ class Interpolnet(nn.Module):
 
     def forward(self, t: Tensor, x_0: Tensor, x_1: Tensor) -> Tensor:
         net_output = self.net(torch.cat((t, x_0, x_1), -1))
-        interpolant = t * x_1 + (1 - t) * x_0 + t * (1 - t) * net_output
+        interpolant = t * x_1 + (1 - t) * x_0 + torch.sqrt(t * (1 - t)) * net_output
         return interpolant
 
     def dt(self, t: Tensor, x_0: Tensor, x_1: Tensor) -> Tensor:
@@ -41,11 +42,13 @@ if __name__ == '__main__':
     params = list(flow.parameters()) + list(interpolnet.parameters())
     optimizer = torch.optim.Adam(params, 1e-2)
     loss_fn = nn.MSELoss()
-    pi = 0.8
+    pi = .8
 
-    priors = {0.25: (torch.tensor(np.array(2.)), torch.tensor(np.array(1. / 1.))),
-              0.75: (torch.tensor(np.array(-2.)), torch.tensor(np.array(1. / 2.)))}
-    for _ in tqdm(range(1000)):
+    # priors = {0.25: (torch.tensor(np.array(2.)), torch.tensor(np.array(1. / 1.))),
+    #           0.75: (torch.tensor(np.array(-2.)), torch.tensor(np.array(1. / 0.1)))}
+    priors = {0.25: (torch.tensor(np.array(2.)), torch.tensor(np.array(1. / 1.)))}
+
+    for _ in tqdm(range(10000)):
         n = 256
         x_1 = torch.randn((256, 1))  # Tensor(make_moons(256, noise=0.05)[0])
         x_0 = torch.randn_like(x_1)
@@ -58,7 +61,7 @@ if __name__ == '__main__':
             x_t = interpolnet(t, x_0, x_1)
             loss_fn(flow(t=t, x_t=x_t), interpolnet.dt(t, x_0, x_1)).backward()
         else:
-            t = np.random.choice([0.25, 0.75])
+            t = np.random.choice([0.25])
             prior = priors[t]
             t = np.tile(t, (256, 1))
             t = torch.tensor(t).type_as(x_0)
@@ -101,9 +104,13 @@ if __name__ == '__main__':
     for i in range(n_steps):
         x = flow.step(x_t=x, t_start=time_steps[i], t_end=time_steps[i + 1])
         x_interpolants[:, i + 1] = x.detach().numpy().squeeze()
+    density_and_trajectories_plot(time_steps, x_interpolants, 0, 0, 1, 1, priors)
+    print(x_interpolants[:, -1].mean(), x_interpolants[:, -1].var())
+
+    """
     for i in range(300):
         plt.plot(time_steps, x_interpolants[i])
-
     plt.show()
+    """
 
 

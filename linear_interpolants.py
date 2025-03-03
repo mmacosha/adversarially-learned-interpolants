@@ -6,6 +6,7 @@ from losses import sq_mahalanobis
 
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from plots import density_and_trajectories_plot
 
 
 class Flow(nn.Module):
@@ -85,10 +86,13 @@ if __name__ == "__main__":
     for i in range(n_steps):
         x = flow.step(x_t=x, t_start=time_steps[i], t_end=time_steps[i + 1])
         x_interpolants[:, i + 1] = x.detach().numpy().squeeze()
+    density_and_trajectories_plot(time_steps, x_interpolants, 0, 0, 1, 1)
+
+    """
     for i in range(300):
         plt.plot(time_steps, x_interpolants[i])
-
     plt.show()
+    """
 
 
 
