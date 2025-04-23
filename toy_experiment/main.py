@@ -1,18 +1,19 @@
 import torch as T
-# from generate_circle_data import sample_interm
-from generate_rotating_gaussians import sample_interm
+from generate_circle_data import sample_interm
+# from generate_rotating_gaussians import sample_interm
 import numpy as np
 import matplotlib.pyplot as plt
 from torchcfm.optimal_transport import OTPlanSampler
-from learnable_interpolants import CorrectionInterpolant, AffineTransformInterpolant
+from learnable_interpolants import CorrectionInterpolant, AffineTransformInterpolant, GaussianProbabilityPath
 
 
 g_hidden = 64
 # interpolant = CorrectionInterpolant(2, g_hidden, 'linear')
-interpolant = AffineTransformInterpolant(2, g_hidden, 'linear')
-opt_interp = T.optim.Adam(interpolant.parameters(), lr=1e-3)
+# interpolant = AffineTransformInterpolant(2, g_hidden, 'linear')
+interpolant = GaussianProbabilityPath(2, g_hidden, 'linear', correction_scale_factor='sqrt')
+opt_interp = T.optim.Adam(interpolant.parameters(), lr=1e-4)
 discriminator = T.nn.Sequential(T.nn.Linear(3, 64), T.nn.ELU(), T.nn.Linear(64, 64), T.nn.ELU(), T.nn.Linear(64, 1), T.nn.Sigmoid()).type(T.float32)
-opt_disc = T.optim.Adam(discriminator.parameters(), lr=1e-2)
+opt_disc = T.optim.Adam(discriminator.parameters(), lr=1e-4)
 
 otplan = OTPlanSampler('exact')
 
@@ -20,8 +21,8 @@ otplan = OTPlanSampler('exact')
 time_stamps = np.arange(1, 10) / 10
 
 losses = []
-bs = 1024 // 2
-reg_weight = 0#.5
+bs = 256
+reg_weight = .5
 lam = 0.1
 for it in range(20000):
 

@@ -41,11 +41,7 @@ class CorrectionInterpolant(nn.Module):
         return loss_reg
 
     def dt(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
-        # x_0 and x_1 have shapes (batch size, d), while t has shape (batch size, 1)
-        t_ = t.clone().requires_grad_(requires_grad=True)
-        interpolant = self(t_, x0, x1)
-        grad_t = T.autograd.grad(interpolant, t_, grad_outputs=T.ones_like(interpolant), create_graph=True)[0]
-        return grad_t
+        pass
 
 
 class AffineTransformInterpolant(nn.Module):
@@ -106,10 +102,66 @@ class AffineTransformInterpolant(nn.Module):
         return loss_reg
 
     def dt(self,  x0: Tensor, x1: Tensor, t: Tensor,) -> Tensor:
-        # x_0 and x_1 have shapes (batch size, d), while t has shape (batch size, 1)
-        t_ = t.clone().requires_grad_(requires_grad=True)
-        interpolant = self(t_, x0, x1)
-        grad_t = T.autograd.grad(interpolant, t_, grad_outputs=T.ones_like(interpolant), create_graph=True)[0]
-        return grad_t
+        pass
+
+class GaussianProbabilityPath(nn.Module):
+    def __init__(self, dim: int = 2, h: int = 64, reference_trajectory='linear',
+                 correction_scale_factor=None, sigma_constant=0.01):
+        super().__init__()
+
+        if reference_trajectory == 'linear':
+            self.phi_ref = lambda x0, x1, t: x1 * t + x0 * (1 - t)
+
+        if (correction_scale_factor is None) & (reference_trajectory == 'linear'):
+            self.c_t = lambda t: t * (1 - t)
+
+        elif correction_scale_factor == 'sqrt':
+            self.c_t = lambda t: T.sqrt(t * (1 - t))
+
+        self.sigma_constant = sigma_constant
+
+        self.mu_interpolnet = T.nn.Sequential(
+            T.nn.Linear(2 * dim + 1, h), T.nn.ELU(),
+            T.nn.Linear(h, h), T.nn.ELU(),
+            T.nn.Linear(h, dim))
+
+        self.log_sigma_interpolnet = T.nn.Sequential(
+            T.nn.Linear(2 * dim + 1, h), T.nn.ELU(),
+            T.nn.Linear(h, h), T.nn.ELU(),
+            T.nn.Linear(h, dim))
+
+    def forward(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
+        input = T.cat([x0, x1, t], 1)
+
+        # input shape is (bs, 2 + 2 + 1)
+
+        self.mu_t = self.phi_ref(x0, x1, t) + self.c_t(t) * self.mu_interpolnet(input)
+        self.sigma_t = self.sigma_constant + t * self.c_t(t) * T.exp(self.log_sigma_interpolnet(input))
+
+        return self.sample_interpolant(self.mu_t, self.sigma_t)
+
+    @staticmethod
+    def sample_interpolant(mu_t, sigma_t):
+        return mu_t + sigma_t * T.randn(mu_t.shape)
+
+    def regularizing_term(self, x0, x1, t, xt_fake):
+        loss_reg = xt_fake[:, :-1] - self.phi_ref(x0, x1, t)
+        if len(loss_reg.shape) > 1:
+            loss_reg = (loss_reg ** 2).sum(1).mean()
+        else:
+            loss_reg = (loss_reg ** 2).mean()
+        return loss_reg
+
+    """
+    def regularizing_term(self, x0, x1, t, xt_fake):
+        loss_reg_mu = self.mu_t - self.phi_ref(x0, x1, t)
+        loss_reg_sigma = self.sigma_t - self.sigma_constant
+        if len(loss_reg_mu.shape) > 1:
+            loss_reg = (loss_reg_mu ** 2).sum(1).mean() + (loss_reg_sigma ** 2).sum(1).mean()
+        else:
+            loss_reg = (loss_reg_mu ** 2).mean() + (loss_reg_sigma ** 2).mean()
+        return loss_reg
+    """
+
 
 
