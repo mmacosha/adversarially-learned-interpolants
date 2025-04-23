@@ -18,6 +18,9 @@ class CorrectionInterpolant(nn.Module):
         if (correction_scale_factor is None) & (reference_trajectory == 'linear'):
             self.c_t = lambda t: t * (1 - t)
 
+        elif correction_scale_factor == 'sqrt':
+            self.c_t = lambda t: T.sqrt(t * (1 - t))
+
         self.interpolnet = T.nn.Sequential(
             T.nn.Linear(2 * dim + 1, h), T.nn.ELU(),
             T.nn.Linear(h, h), T.nn.ELU(),
@@ -136,7 +139,7 @@ class GaussianProbabilityPath(nn.Module):
         # input shape is (bs, 2 + 2 + 1)
 
         self.mu_t = self.phi_ref(x0, x1, t) + self.c_t(t) * self.mu_interpolnet(input)
-        self.sigma_t = self.sigma_constant + t * self.c_t(t) * T.exp(self.log_sigma_interpolnet(input))
+        self.sigma_t = self.sigma_constant + self.c_t(t) * T.exp(self.log_sigma_interpolnet(input))
 
         return self.sample_interpolant(self.mu_t, self.sigma_t)
 

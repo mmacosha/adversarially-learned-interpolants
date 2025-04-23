@@ -3,26 +3,27 @@ from generate_circle_data import sample_interm
 # from generate_rotating_gaussians import sample_interm
 import numpy as np
 import matplotlib.pyplot as plt
-from torchcfm.optimal_transport import OTPlanSampler
+from torchcfm.optimal_transport import OTPlanSampler, wasserstein
 from learnable_interpolants import CorrectionInterpolant, AffineTransformInterpolant, GaussianProbabilityPath
 
 
 g_hidden = 64
-# interpolant = CorrectionInterpolant(2, g_hidden, 'linear')
+# interpolant = CorrectionInterpolant(2, g_hidden, 'linear', correction_scale_factor='sqrt')
 # interpolant = AffineTransformInterpolant(2, g_hidden, 'linear')
 interpolant = GaussianProbabilityPath(2, g_hidden, 'linear', correction_scale_factor='sqrt')
-opt_interp = T.optim.Adam(interpolant.parameters(), lr=1e-4)
+opt_interp = T.optim.Adam(interpolant.parameters(), lr=1e-2)
 discriminator = T.nn.Sequential(T.nn.Linear(3, 64), T.nn.ELU(), T.nn.Linear(64, 64), T.nn.ELU(), T.nn.Linear(64, 1), T.nn.Sigmoid()).type(T.float32)
 opt_disc = T.optim.Adam(discriminator.parameters(), lr=1e-4)
 
 otplan = OTPlanSampler('exact')
 
 # assume we have data in the following time stamps
-time_stamps = np.arange(1, 10) / 10
+time_stamps = (np.arange(1, 10) / 10)[::2]
+# observed time stamps are array([0.1, 0.3, 0.5, 0.7, 0.9])
 
 losses = []
-bs = 256
-reg_weight = .5
+bs = 128
+reg_weight = .05
 lam = 0.1
 for it in range(20000):
 
@@ -62,7 +63,9 @@ for it in range(20000):
         print(it, np.array(losses)[-100:].mean(0))
         time_steps = np.arange(0, 11) / 10
         fig, axes = plt.subplots(3, 11, figsize=(15, 6), sharex=True, sharey=True)
+        emd = []
         for i, t in enumerate(time_steps):
+            t_scaler = t
             t = T.ones(bs, dtype=T.float32) * t
             x_t, xhat_t, y_t = sample_interm(bs, t, lam=lam)
             x0, *_ = sample_interm(bs, T.zeros_like(t))
@@ -71,15 +74,21 @@ for it in range(20000):
             t = t.unsqueeze(-1)
 
             with T.no_grad():
-                xt_fake = T.cat([interpolant(x0, x1, t), t], 1).detach()
+                xt_fake = interpolant(x0, x1, t).detach()
+
+            emd.append(wasserstein(x_t, xt_fake))
 
             axes[0, i].scatter(x_t[:, 0], x_t[:, 1], s=1)
-            axes[0, 5].set_title(f'$t$ = {time_stamps[4]:.1f}')
-            axes[1, i].scatter(xhat_t[:, 0], xhat_t[:, 1], s=1)
+            axes[0, i].set_title(f'$t$ = {time_steps[i]:.1f}')
+            if t_scaler in time_stamps:
+                axes[1, i].scatter(xhat_t[:, 0], xhat_t[:, 1], s=1)
+            else:
+                axes[1, i].set_title('Unobserved')
             axes[2, i].scatter(xt_fake[:, 0], xt_fake[:, 1], s=1)
         axes[0,0].set_ylabel(r'True Kernel, $\kappa(x|y_t)$')
         axes[1,0].set_ylabel(r'Approx Kernel, $\hat{\kappa}(x|y_t)$')
         axes[2,0].set_ylabel(r'Generator')
+        print("Mean EMD:", np.mean(emd))
 
         for ax in axes[-1,:]:
             ax.set_xlabel('$x_1$')
