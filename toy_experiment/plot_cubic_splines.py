@@ -97,9 +97,12 @@ if __name__ == '__main__':
 
         axes[0, i].scatter(x_t[:, 0], x_t[:, 1], s=1)
         axes[0, i].set_title(f'$t$ = {all_t[i]:.1f}')
-        if (t in time_stamps) and (t > 0.) and (t < 1.):
-            xhat_t = observed_x[:, j]
-            axes[1, i].scatter(xhat_t[:, 0], xhat_t[:, 1], s=1)
+        if (t in time_stamps):
+            if (t == 0.) or (t == 1.):
+                pass
+            else:
+                xhat_t = observed_x[:, j]
+                axes[1, i].scatter(xhat_t[:, 0], xhat_t[:, 1], s=1)
             j = j + 1
         else:
             axes[1, i].set_title('Unobserved')
