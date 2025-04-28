@@ -1,21 +1,39 @@
 import torch as T
-from generate_circle_data import sample_interm
-# from generate_rotating_gaussians import sample_interm
+# from generate_circle_data import sample_interm
+from generate_rotating_gaussians import sample_interm
 import numpy as np
 import matplotlib.pyplot as plt
 from torchcfm.optimal_transport import OTPlanSampler, wasserstein
 from learnable_interpolants import CorrectionInterpolant, AffineTransformInterpolant, GaussianProbabilityPath
+import time
 
 
-g_hidden = 64
-# interpolant = CorrectionInterpolant(2, g_hidden, 'linear', correction_scale_factor='sqrt')
+device = 'cuda' if T.cuda.is_available() else 'cpu'
+print(f"Using device: {device}")
+
+g_hidden = 256
+# interpolant = CorrectionInterpolant(2, g_hidden, 'linear', correction_scale_factor=None)
 # interpolant = AffineTransformInterpolant(2, g_hidden, 'linear')
-interpolant = GaussianProbabilityPath(2, g_hidden, 'linear', correction_scale_factor='sqrt')
-opt_interp = T.optim.Adam(interpolant.parameters(), lr=1e-2)
-discriminator = T.nn.Sequential(T.nn.Linear(3, 64), T.nn.ELU(), T.nn.Linear(64, 64), T.nn.ELU(), T.nn.Linear(64, 1), T.nn.Sigmoid()).type(T.float32)
-opt_disc = T.optim.Adam(discriminator.parameters(), lr=1e-4)
+interpolant = GaussianProbabilityPath(2, g_hidden, 'linear', correction_scale_factor=None)
+interpolant = interpolant.to(device)
+
+discriminator = T.nn.Sequential(
+    T.nn.Linear(3, g_hidden), T.nn.ELU(),
+    T.nn.Linear(g_hidden, g_hidden), T.nn.ELU(),
+    T.nn.Linear(g_hidden, 1), T.nn.Sigmoid()
+).to(device)
+
+lr = 1e-3
+opt_interp = T.optim.Adam(interpolant.parameters(), lr=lr)
+opt_disc = T.optim.Adam(discriminator.parameters(), lr=lr)
 
 otplan = OTPlanSampler('exact')
+
+X0, *_ = sample_interm(2000, T.zeros(2000))
+X1, *_ = sample_interm(2000, T.ones(2000))
+X0, X1 = X0.to(device), X1.to(device)
+pi = otplan.get_map(X0, X1)
+idx_x0, idx_x1 = otplan.sample_map(pi, 4000, replace=True)
 
 # assume we have data in the following time stamps
 time_stamps = (np.arange(1, 10) / 10)[::2]
@@ -24,27 +42,24 @@ time_stamps = (np.arange(1, 10) / 10)[::2]
 losses = []
 bs = 128
 reg_weight = .05
-lam = 0.1
+lam = 0.2
 for it in range(20000):
 
     t = np.random.choice(time_stamps, size=bs)
+    t = T.tensor(t, dtype=T.float32, device=device)
 
-    t = T.tensor(t, dtype=T.float32)
-    x_t, xhat_t, y_t = sample_interm(bs, t, lam=lam)
+    x_t, xhat_t, _ = sample_interm(bs, t.to('cpu'), lam=lam)
+    x_t, xhat_t= x_t.to(device), xhat_t.to(device)
 
-    x0, *_ = sample_interm(bs, T.zeros_like(t))
-    x1, *_ = sample_interm(bs, T.ones_like(t))
-
-    x0, x1 = otplan.sample_plan(x0, x1)
+    idx = T.multinomial(T.ones(idx_x0.size), bs, replacement=False)
+    x0, x1 = X0[idx_x0[idx]], X1[idx_x1[idx]]
 
     t = t.unsqueeze(-1)
 
     opt_interp.zero_grad()
     xt_fake = T.cat([interpolant(x0, x1, t), t], 1)
-    disc_score_fake = discriminator(xt_fake).log()  # (1-discriminator(xt_fake)).log()
-    loss_interp = - disc_score_fake.mean()
-    # loss_reg = xt_fake[:, :-1] - (x1 * t + x0 * (1-t))
-    # loss_reg = (loss_reg ** 2).sum(1).mean()
+    disc_score_fake = (1-discriminator(xt_fake)).log() # discriminator(xt_fake).log()  #
+    loss_interp = disc_score_fake.mean()
     loss_reg = interpolant.regularizing_term(x0, x1, t, xt_fake)
     (loss_interp + reg_weight * loss_reg).backward()
     opt_interp.step()
@@ -66,15 +81,17 @@ for it in range(20000):
         emd = []
         for i, t in enumerate(time_steps):
             t_scaler = t
-            t = T.ones(bs, dtype=T.float32) * t
-            x_t, xhat_t, y_t = sample_interm(bs, t, lam=lam)
-            x0, *_ = sample_interm(bs, T.zeros_like(t))
-            x1, *_ = sample_interm(bs, T.ones_like(t))
-            x0, x1 = otplan.sample_plan(x0, x1)
+            t = T.ones(bs, dtype=T.float32, device=device) * t
+            x_t, xhat_t, y_t = sample_interm(bs, t.to('cpu'), lam=lam)
+
+            # idx_x0, idx_x1 = otplan.sample_map(pi, bs, replace=False)
+            # x0, x1, = X0[idx_x0], X1[idx_x1]
+            idx = T.multinomial(T.ones(idx_x0.size), bs, replacement=False)
+            x0, x1 = X0[idx_x0[idx]], X1[idx_x1[idx]]
             t = t.unsqueeze(-1)
 
             with T.no_grad():
-                xt_fake = interpolant(x0, x1, t).detach()
+                xt_fake = interpolant(x0, x1, t).detach().to('cpu')
 
             emd.append(wasserstein(x_t, xt_fake))
 

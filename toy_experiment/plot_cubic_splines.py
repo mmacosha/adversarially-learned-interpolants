@@ -2,7 +2,8 @@ import numpy as np
 from scipy import interpolate
 from torchcfm import OTPlanSampler
 import torch as T
-from generate_circle_data import sample_interm
+# from generate_circle_data import sample_interm
+from generate_rotating_gaussians import sample_interm
 import matplotlib.pyplot as plt
 
 

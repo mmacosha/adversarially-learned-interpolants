@@ -24,7 +24,7 @@ class CorrectionInterpolant(nn.Module):
         self.interpolnet = T.nn.Sequential(
             T.nn.Linear(2 * dim + 1, h), T.nn.ELU(),
             T.nn.Linear(h, h), T.nn.ELU(),
-            T.nn.Linear(h, dim)).type(T.float32)
+            T.nn.Linear(h, dim))
 
     def forward(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
         input = T.cat([x0, x1, t], 1)
@@ -66,15 +66,15 @@ class AffineTransformInterpolant(nn.Module):
 
         self.shiftnet = T.nn.Sequential(
             T.nn.Linear(1, h), T.nn.ELU(),
+            T.nn.Linear(h, h), T.nn.ELU(),
             T.nn.Linear(h, dim)
-            )
+        )
 
         self.scalenet = T.nn.Sequential(
             T.nn.Linear(1, h), T.nn.ELU(),
+            T.nn.Linear(h, h), T.nn.ELU(),
             T.nn.Linear(h, dim)
-            # T.nn.Linear(h, dim * dim),
-            # T.nn.Unflatten(1, (dim, dim))
-            )
+        )
 
         self.f = None
 
@@ -90,7 +90,8 @@ class AffineTransformInterpolant(nn.Module):
         # scale_t = LA.matrix_exp((t * (1 - t)).view(t.shape[0], 1, 1) * G)
         # scale_t = T.einsum("bij,bj->bi", scale_t, self.phi_ref(x0, x1, t))
 
-        scale_t = T.exp((t * (1 - t)) * self.scalenet(t))
+        # scale_t = T.exp((t * (1 - t)) * self.scalenet(t))
+        scale_t = (1 - (t * (1 - t))) * self.scalenet(t)
         shift_t = t * (1 - t) * self.shiftnet(t)
 
         return shift_t + scale_t * self.phi_ref(x0, x1, t) + self.c_t(t) * self.f
@@ -131,7 +132,7 @@ class GaussianProbabilityPath(nn.Module):
         self.log_sigma_interpolnet = T.nn.Sequential(
             T.nn.Linear(2 * dim + 1, h), T.nn.ELU(),
             T.nn.Linear(h, h), T.nn.ELU(),
-            T.nn.Linear(h, dim))
+            T.nn.Linear(h, dim), nn.Hardtanh(min_val=-6., max_val=2.))
 
     def forward(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
         input = T.cat([x0, x1, t], 1)
@@ -139,13 +140,13 @@ class GaussianProbabilityPath(nn.Module):
         # input shape is (bs, 2 + 2 + 1)
 
         self.mu_t = self.phi_ref(x0, x1, t) + self.c_t(t) * self.mu_interpolnet(input)
-        self.sigma_t = self.sigma_constant + self.c_t(t) * T.exp(self.log_sigma_interpolnet(input))
+        self.sigma_t = T.sqrt(self.sigma_constant ** 2 + self.c_t(t) * T.exp(2 * self.log_sigma_interpolnet(input)))
 
         return self.sample_interpolant(self.mu_t, self.sigma_t)
 
     @staticmethod
     def sample_interpolant(mu_t, sigma_t):
-        return mu_t + sigma_t * T.randn(mu_t.shape)
+        return mu_t + sigma_t * T.randn(mu_t.shape, device=mu_t.device)
 
     def regularizing_term(self, x0, x1, t, xt_fake):
         loss_reg = xt_fake[:, :-1] - self.phi_ref(x0, x1, t)
