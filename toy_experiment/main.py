@@ -1,20 +1,19 @@
 import torch as T
-# from generate_circle_data import sample_interm
-from generate_rotating_gaussians import sample_interm
+from generate_circle_data import sample_interm
+# from generate_rotating_gaussians import sample_interm
 import numpy as np
 import matplotlib.pyplot as plt
 from torchcfm.optimal_transport import OTPlanSampler, wasserstein
 from learnable_interpolants import CorrectionInterpolant, AffineTransformInterpolant, GaussianProbabilityPath
-import time
 
 
 device = 'cuda' if T.cuda.is_available() else 'cpu'
 print(f"Using device: {device}")
 
-g_hidden = 256
-# interpolant = CorrectionInterpolant(2, g_hidden, 'linear', correction_scale_factor=None)
+g_hidden = 64
+interpolant = CorrectionInterpolant(2, g_hidden, 'linear', correction_scale_factor='sqrt', interpolnet_input='reference')
 # interpolant = AffineTransformInterpolant(2, g_hidden, 'linear')
-interpolant = GaussianProbabilityPath(2, g_hidden, 'linear', correction_scale_factor=None)
+# interpolant = GaussianProbabilityPath(2, g_hidden, 'linear', correction_scale_factor=None)
 interpolant = interpolant.to(device)
 
 discriminator = T.nn.Sequential(
@@ -40,8 +39,10 @@ time_stamps = (np.arange(1, 10) / 10)[::2]
 # observed time stamps are array([0.1, 0.3, 0.5, 0.7, 0.9])
 
 losses = []
-bs = 128
-reg_weight = .05
+emds = []
+emds_noisy = []
+bs = 512
+reg_weight = 1.
 lam = 0.2
 for it in range(20000):
 
@@ -58,8 +59,8 @@ for it in range(20000):
 
     opt_interp.zero_grad()
     xt_fake = T.cat([interpolant(x0, x1, t), t], 1)
-    disc_score_fake = (1-discriminator(xt_fake)).log() # discriminator(xt_fake).log()  #
-    loss_interp = disc_score_fake.mean()
+    disc_score_fake = discriminator(xt_fake).log()  # (1-discriminator(xt_fake)).log() #
+    loss_interp = -disc_score_fake.mean()
     loss_reg = interpolant.regularizing_term(x0, x1, t, xt_fake)
     (loss_interp + reg_weight * loss_reg).backward()
     opt_interp.step()
@@ -79,6 +80,7 @@ for it in range(20000):
         time_steps = np.arange(0, 11) / 10
         fig, axes = plt.subplots(3, 11, figsize=(15, 6), sharex=True, sharey=True)
         emd = []
+        emd_noisy = []
         for i, t in enumerate(time_steps):
             t_scaler = t
             t = T.ones(bs, dtype=T.float32, device=device) * t
@@ -91,9 +93,13 @@ for it in range(20000):
             t = t.unsqueeze(-1)
 
             with T.no_grad():
-                xt_fake = interpolant(x0, x1, t).detach().to('cpu')
+                xt_fake = interpolant(x0, x1, t).detach()
+                loss_reg = interpolant.regularizing_term(x0, x1, t, xt_fake = T.cat([xt_fake, t], 1))
+                xt_fake = xt_fake.to('cpu')
 
-            emd.append(wasserstein(x_t, xt_fake))
+            if (t_scaler > 0.) and (t_scaler < 1.):
+                emd.append(wasserstein(x_t, xt_fake, power=1))
+                emd_noisy.append(wasserstein(xhat_t, xt_fake, power=1) + loss_reg.item())
 
             axes[0, i].scatter(x_t[:, 0], x_t[:, 1], s=1)
             axes[0, i].set_title(f'$t$ = {time_steps[i]:.1f}')
@@ -106,6 +112,9 @@ for it in range(20000):
         axes[1,0].set_ylabel(r'Approx Kernel, $\hat{\kappa}(x|y_t)$')
         axes[2,0].set_ylabel(r'Generator')
         print("Mean EMD:", np.mean(emd))
+        print("Mean EMD to Noisy Data:", np.mean(emd_noisy))
+        emds.append(np.mean(emd))
+        emds_noisy.append(np.mean(emd_noisy))
 
         for ax in axes[-1,:]:
             ax.set_xlabel('$x_1$')
@@ -117,3 +126,12 @@ for it in range(20000):
 
         plt.tight_layout()
         plt.show()
+
+losses = np.array(losses)
+fig, ax = plt.subplots(1, 2, figsize=(15, 5))
+ax[0].plot(losses[:, 0] + reg_weight * losses[:, 1], label='regularized generator loss')
+ax[0].plot(losses[:, 2], label='discriminator loss')
+ax[0].legend()
+ax[1].plot(emds)
+ax[1].plot(emds_noisy)
+plt.show()

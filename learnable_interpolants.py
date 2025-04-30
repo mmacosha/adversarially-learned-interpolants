@@ -1,6 +1,7 @@
 import torch as T
 from torch import nn, Tensor
-import torch.linalg as LA
+
+# import torch.linalg as LA
 
 
 class CorrectionInterpolant(nn.Module):
@@ -9,8 +10,10 @@ class CorrectionInterpolant(nn.Module):
     # regularizing term = || reference_trajectory(x0, x1, t) - interpolant || ** 2
     #                   = correction_scale_factor_t ** 2 || interpolant || ** 2
 
-    def __init__(self, dim: int = 2, h: int = 64, reference_trajectory='linear', correction_scale_factor=None):
+    def __init__(self, dim: int = 2, h: int = 64, reference_trajectory='linear',
+                 correction_scale_factor=None, interpolnet_input='reference'):
         super().__init__()
+        self.interpolnet_input = interpolnet_input
 
         if reference_trajectory == 'linear':
             self.phi_ref = lambda x0, x1, t: x1 * t + x0 * (1 - t)
@@ -21,15 +24,24 @@ class CorrectionInterpolant(nn.Module):
         elif correction_scale_factor == 'sqrt':
             self.c_t = lambda t: T.sqrt(t * (1 - t))
 
-        self.interpolnet = T.nn.Sequential(
-            T.nn.Linear(2 * dim + 1, h), T.nn.ELU(),
-            T.nn.Linear(h, h), T.nn.ELU(),
-            T.nn.Linear(h, dim))
+        if interpolnet_input == 'reference':
+            self.interpolnet = T.nn.Sequential(
+                T.nn.Linear(dim + 1, h), T.nn.ELU(),
+                T.nn.Linear(h, h), T.nn.ELU(),
+                T.nn.Linear(h, dim))
+        else:
+            self.interpolnet = T.nn.Sequential(
+                T.nn.Linear(2 * dim + 1, h), T.nn.ELU(),
+                T.nn.Linear(h, h), T.nn.ELU(),
+                T.nn.Linear(h, dim))
 
     def forward(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
-        input = T.cat([x0, x1, t], 1)
+        if self.interpolnet_input == 'reference':
+            input = T.cat([self.phi_ref(x0, x1, t), t], 1)
+        else:
+            # input shape is (bs, 2 + 2 + 1)
+            input = T.cat([x0, x1, t], 1)
 
-        # input shape is (bs, 2 + 2 + 1)
         f = self.interpolnet(input)
         # shape of f is (bs, 2)
 
@@ -166,6 +178,57 @@ class GaussianProbabilityPath(nn.Module):
             loss_reg = (loss_reg_mu ** 2).mean() + (loss_reg_sigma ** 2).mean()
         return loss_reg
     """
+
+class SpatialCorrectionInterpolant(nn.Module):
+    def __init__(self, dim: int = 2, h: int = 64, reference_trajectory='linear',
+                 correction_scale_factor=None, interpolnet_input='reference', coordinate_dims=1):
+        super().__init__()
+        self.interpolnet_input = interpolnet_input
+
+        if reference_trajectory == 'linear':
+            self.phi_ref = lambda x0, x1, t: x1 * t + x0 * (1 - t)
+
+        if (correction_scale_factor is None) & (reference_trajectory == 'linear'):
+            self.c_t = lambda t: t * (1 - t)
+
+        elif correction_scale_factor == 'sqrt':
+            self.c_t = lambda t: T.sqrt(t * (1 - t))
+
+        if interpolnet_input == 'reference':
+            self.interpolnet = T.nn.Sequential(
+                T.nn.Linear(dim + 1 + coordinate_dims, h), T.nn.ELU(),
+                T.nn.Linear(h, h), T.nn.ELU(),
+                T.nn.Linear(h, dim))
+        else:
+            self.interpolnet = T.nn.Sequential(
+                T.nn.Linear(2 * dim + 1 + coordinate_dims, h), T.nn.ELU(),
+                T.nn.Linear(h, h), T.nn.ELU(),
+                T.nn.Linear(h, dim))
+
+    def forward(self, x0: Tensor, x1: Tensor, t: Tensor, c: Tensor) -> Tensor:
+        if self.interpolnet_input == 'reference':
+            input = T.cat([self.phi_ref(x0, x1, t), t, c], 1)
+        else:
+            input = T.cat([x0, x1, t, c], 1)
+
+        self.f = self.interpolnet(input)
+        # shape of f is (bs, 2)
+
+        return self.phi_ref(x0, x1, t) + self.c_t(t) * self.f
+
+    def regularizing_term(self, x0, x1, t, xt_fake):
+        # loss_reg = xt_fake[:, :-2] - self.phi_ref(x0, x1, t)
+        loss_reg = self.f * self.c_t(t)
+        if len(loss_reg.shape) > 1:
+            loss_reg = (loss_reg ** 2).sum(1).mean()
+        else:
+            loss_reg = (loss_reg ** 2).mean()
+        return loss_reg
+
+    def dt(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
+        pass
+
+
 
 
 
