@@ -198,12 +198,12 @@ class SpatialCorrectionInterpolant(nn.Module):
             self.interpolnet = T.nn.Sequential(
                 T.nn.Linear(dim + 1 + coordinate_dims, h), T.nn.ELU(),
                 T.nn.Linear(h, h), T.nn.ELU(),
-                T.nn.Linear(h, dim))
+                T.nn.Linear(h, dim), T.nn.ReLU())
         else:
             self.interpolnet = T.nn.Sequential(
                 T.nn.Linear(2 * dim + 1 + coordinate_dims, h), T.nn.ELU(),
                 T.nn.Linear(h, h), T.nn.ELU(),
-                T.nn.Linear(h, dim))
+                T.nn.Linear(h, dim), T.nn.ReLU())
 
     def forward(self, x0: Tensor, x1: Tensor, t: Tensor, c: Tensor) -> Tensor:
         if self.interpolnet_input == 'reference':
@@ -211,7 +211,7 @@ class SpatialCorrectionInterpolant(nn.Module):
         else:
             input = T.cat([x0, x1, t, c], 1)
 
-        self.f = self.interpolnet(input)
+        self.f = T.log(self.interpolnet(input) + 1)
         # shape of f is (bs, 2)
 
         return self.phi_ref(x0, x1, t) + self.c_t(t) * self.f
