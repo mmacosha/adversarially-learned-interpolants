@@ -11,14 +11,14 @@ g_hidden = 64
 interpolant = CorrectionInterpolant(2, g_hidden, 'linear', correction_scale_factor='sqrt')
 # interpolant = AffineTransformInterpolant(2, g_hidden, 'linear')
 # interpolant = GaussianProbabilityPath(2, g_hidden, 'linear', correction_scale_factor='sqrt')
-opt_interp = T.optim.Adam(interpolant.parameters(), lr=1e-2)
+opt_interp = T.optim.Adam(interpolant.parameters(), lr=1e-4)
 discriminator = T.nn.Sequential(T.nn.Linear(3, 64), T.nn.ELU(),
                                 T.nn.Linear(64, 64), T.nn.ELU(),
                                 T.nn.Linear(64, 1), T.nn.Sigmoid())
-opt_disc = T.optim.Adam(discriminator.parameters(), lr=1e-2)
+opt_disc = T.optim.Adam(discriminator.parameters(), lr=1e-4)
 
 otplan = OTPlanSampler('exact')
-training_data = sc.read_h5ad("../data/Drosophila/drosophila_p50.h5ad")
+training_data = sc.read_h5ad("../data/Drosophila/drosophila_p100.h5ad")
 true_data = sc.read_h5ad("../data/Drosophila/drosophila_p100.h5ad")
 
 slides = T.tensor(np.arange(2, 16, dtype=np.float32)[::2])  # time stamps with observed noisy data
@@ -86,7 +86,8 @@ for it in range(20000):
             with T.no_grad():
                 xt_fake = interpolant(x0, x1, t).detach()
 
-            emd.append(wasserstein(x_t, xt_fake))
+            if (i > 0) and (i < 15):
+                emd.append(wasserstein(x_t, xt_fake))
 
             axes[0, i].scatter(x_t[:, 0], x_t[:, 1], s=1)
             axes[0, i].set_title(f's = {int(all_slides[i])}')
@@ -111,6 +112,7 @@ for it in range(20000):
         plt.tight_layout()
         plt.show()
 
+        """
         x0 = sample_interm(true_data, T.ones(vis_bs))
         x1 = sample_interm(true_data, T.ones(vis_bs) * 16)
 
@@ -125,6 +127,6 @@ for it in range(20000):
                 xt_fake = interpolant(x0, x1, t).detach()
             plt.scatter(xt_fake[:, 0], xt_fake[:, 1], s=0.1, color='black', label='Interpolations', alpha=0.5)
         plt.show()
-
+        """
 
 
