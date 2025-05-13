@@ -4,6 +4,7 @@ import os
 import cv2
 import matplotlib.pyplot as plt
 import pandas as pd
+from torchcfm import OTPlanSampler
 
 
 def load_data(scale_factor, device):
@@ -59,9 +60,9 @@ class Plotter(object):
         ax.scatter(x, y, alpha=0.2, color='red')
         ax.set_title(f""
                      f"{self.slide_names[slide]}" +
-                     " (Observed)" * observed +
-                     " (Unobserved)" * (1 - observed) +
-                     f"t = {t}"
+                     " (Observed;" * observed +
+                     " (Unobserved;" * (1 - observed) +
+                     f" t = {t})"
                      )
         ax.axis("off")
 
@@ -86,4 +87,58 @@ class Plotter(object):
             self.overlay_spot_coordinates(xt_fake.to('cpu'), slide, axes[1, slide], observed_list[slide])
         plt.tight_layout()
         plt.show()
+
+    def plot_data(self, X):
+        fig, axes = plt.subplots(2, 4, figsize=(24, 12))
+        for slide, s_t in enumerate(X):
+            ax = axes[1, slide]
+            t = self.time_stamps[slide]
+            ax.imshow(self.rgb_images[slide])
+            x = s_t[:, 1] * self.coordinate_scaling
+            y = s_t[:, 0] * self.coordinate_scaling
+            ax.scatter(x, y, alpha=0.2, color='red')
+            ax.axis("off")
+
+            ax = axes[0, slide]
+            ax.imshow(self.rgb_images[slide])
+            ax.set_title(f""
+                         f"{self.slide_names[slide]}" +
+                         f" (t = {t})", fontsize=20
+                         )
+            ax.axis("off")
+        plt.tight_layout()
+        plt.show()
+
+def pre_compute_OT_minibatches(X0, X1, bs, n_batches):
+    coupled_indices = T.zeros((n_batches, bs, 2), device=X0.device, dtype=T.int)
+    otplan = OTPlanSampler('exact')
+    for batch in range(n_batches):
+        x0_indices = T.randint(0, X0.size(0), (bs,), device=X0.device)
+        x0 = X0[x0_indices]
+        x1_indices = T.randint(0, X1.size(0), (bs,), device=X0.device)
+        x1 = X1[x1_indices]
+
+        pi = otplan.get_map(x0, x1)
+
+        probs = T.from_numpy(pi[T.arange(bs)])  # (bs, bs)
+        probs = probs / T.sum(probs, 1, keepdim=True)
+        idxs = T.multinomial(probs, num_samples=1).squeeze(1)
+
+        # idx_x0, idx_x1 = otplan.sample_map(pi, bs, replace=False)
+        coupled_indices[batch, :, 0], coupled_indices[batch, :, 1] = x0_indices, idxs
+    return coupled_indices
+
+
+def pad_a_like_b(a, b):
+    """Pad a to have the same number of dimensions as b."""
+    if isinstance(a, float | int):
+        return a
+    return a.reshape(-1, *([1] * (b.dim() - 1)))
+
+
+if __name__ == '__main__':
+    X = load_data(scale_factor=100, device='cpu')
+    pl = Plotter("/home/oskar/phd/interpolnet/Mixture-FMLs/data/ST_images/ref_U5_warped_images",
+                 [0, 0.25, 0.75, 1])
+    pl.plot_data(X)
 

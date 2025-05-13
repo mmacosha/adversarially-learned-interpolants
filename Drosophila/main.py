@@ -3,54 +3,67 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torchcfm.optimal_transport import OTPlanSampler, wasserstein
 from learnable_interpolants import CorrectionInterpolant, AffineTransformInterpolant, GaussianProbabilityPath
-import scanpy as sc
-from utils import sample_interm
+from utils import sample_interm, load_data
 
 
-g_hidden = 64
-interpolant = CorrectionInterpolant(2, g_hidden, 'linear', correction_scale_factor='sqrt')
+device = 'cuda' if T.cuda.is_available() else 'cpu'
+print(f"Using device: {device}")
+
+g_hidden = 512
+interpolant = CorrectionInterpolant(2, g_hidden, 'linear', correction_scale_factor=None, interpolnet_input='')
 # interpolant = AffineTransformInterpolant(2, g_hidden, 'linear')
-# interpolant = GaussianProbabilityPath(2, g_hidden, 'linear', correction_scale_factor='sqrt')
-opt_interp = T.optim.Adam(interpolant.parameters(), lr=1e-4)
-discriminator = T.nn.Sequential(T.nn.Linear(3, 64), T.nn.ELU(),
-                                T.nn.Linear(64, 64), T.nn.ELU(),
-                                T.nn.Linear(64, 1), T.nn.Sigmoid())
+# interpolant = GaussianProbabilityPath(2, g_hidden, 'linear', correction_scale_factor=None)
+interpolant = interpolant.to(device)
+
+discriminator = T.nn.Sequential(
+    T.nn.Linear(3, g_hidden), T.nn.ELU(),
+    T.nn.Linear(g_hidden, g_hidden), T.nn.ELU(),
+    T.nn.Linear(g_hidden, 1), T.nn.Sigmoid()
+).to(device)
+
+opt_interp = T.optim.Adam(interpolant.parameters(), lr=1e-5)
 opt_disc = T.optim.Adam(discriminator.parameters(), lr=1e-4)
 
+scale_factor = 10
+X = load_data(scale_factor)
+
+# PRE-PROCESS MINIBATCHES
 otplan = OTPlanSampler('exact')
-training_data = sc.read_h5ad("../data/Drosophila/drosophila_p100.h5ad")
-true_data = sc.read_h5ad("../data/Drosophila/drosophila_p100.h5ad")
+pi = otplan.get_map(X[0], X[-1])
+idx_x0, idx_x1 = otplan.sample_map(pi, 4000, replace=True)
+N = min([x.shape[0] for x in X])
+eval_idx_x0, eval_idx_x1 = otplan.sample_map(pi, N, replace=True)
 
-slides = T.tensor(np.arange(2, 16, dtype=np.float32)[::2])  # time stamps with observed noisy data
+
+n_observed = 3
+observed_slides = T.tensor(np.linspace(0, 15, n_observed, dtype=int))
 losses = []
-bs = 128
-reg_weight = .5
-for it in range(20000):
+bs = 512
+reg_weight = 0.001  # best performing = 0.01 or 0.001
+for it in range(40000):
 
-    idx = T.multinomial(T.ones_like(slides), bs, replacement=True)
-    sampled_slides = slides[idx]
+    # sample intermediate slide indices
+    idx = T.randint(1, n_observed - 1, (bs,))
+    sampled_slides = observed_slides[idx]
 
-    xhat_t = sample_interm(training_data, sampled_slides)
-
-    x0 = sample_interm(true_data, T.ones_like(sampled_slides))
-    x1 = sample_interm(true_data, T.ones_like(sampled_slides) * 16)
-
-    x0, x1 = otplan.sample_plan(x0, x1)
+    idx = T.randint(0, idx_x0.size, (bs,))
+    x0, x1 = X[0][idx_x0[idx]], X[-1][idx_x1[idx]]
+    x0, x1 = x0.to(device), x1.to(device)
 
     # embed the slide indices to the unit line
-    t = (sampled_slides - 1) / (16 - 1)
-    t = t.unsqueeze(-1)
+    t = sampled_slides / (16 - 1)
+    t = t.unsqueeze(-1).to(device)
 
     opt_interp.zero_grad()
     xt_fake = T.cat([interpolant(x0, x1, t), t], 1)
-    disc_score_fake = discriminator(xt_fake).log()  # (1-discriminator(xt_fake)).log()
-    loss_interp = - disc_score_fake.mean()
-    # loss_reg = xt_fake[:, :-1] - (x1 * t + x0 * (1-t))
-    # loss_reg = (loss_reg ** 2).sum(1).mean()
+    disc_score_fake =  (1-discriminator(xt_fake)).log() # discriminator(xt_fake).log()  #
+    loss_interp = disc_score_fake.mean()
     loss_reg = interpolant.regularizing_term(x0, x1, t, xt_fake)
     (loss_interp + reg_weight * loss_reg).backward()
     opt_interp.step()
 
+    xhat_t = sample_interm(X, sampled_slides)
+    xhat_t = xhat_t.to(device)
     opt_disc.zero_grad()
     xt_real = T.cat([xhat_t, t], 1)
     disc_score_real = discriminator(xt_real).log()
@@ -63,44 +76,37 @@ for it in range(20000):
 
     if it % 1000 == 0:
         print(it, np.array(losses)[-100:].mean(0))
-        all_slides = np.arange(1, 17, dtype=np.float32)
-        fig, axes = plt.subplots(3, all_slides.size, figsize=(20, 8), sharex=True, sharey=True)
+        all_slides = np.arange(0, 16, dtype=np.float32)
+        # fig, axes = plt.subplots(2, all_slides.size, figsize=(30, 4), sharex=True, sharey=True)
         emd = []
-        vis_bs = 200
+        emd_observed = []
+        x0, x1 = X[0][eval_idx_x0], X[-1][eval_idx_x1]
+        x0, x1 = x0.to(device), x1.to(device)
         for i, slide_idx in enumerate(all_slides):
-            t_scaler = slide_idx
-            slide_idx = T.ones(vis_bs, dtype=T.float32) * slide_idx
-
-            x_t = sample_interm(true_data, slide_idx)
-            xhat_t = sample_interm(training_data, slide_idx)
-
-            x0 = sample_interm(true_data, T.ones_like(slide_idx))
-            x1 = sample_interm(true_data, T.ones_like(slide_idx) * 16)
-
-            x0, x1 = otplan.sample_plan(x0, x1)
+            slide_scaler = slide_idx
+            slide_idx = T.ones(N, dtype=T.int) * slide_idx
 
             # embed the slide indices to the unit line
-            t = (slide_idx - 1) / (16 - 1)
-            t = t.unsqueeze(-1)
+            t = slide_idx / (16 - 1)
+            t = t.unsqueeze(-1).to(device)
 
             with T.no_grad():
                 xt_fake = interpolant(x0, x1, t).detach()
 
-            if (i > 0) and (i < 15):
-                emd.append(wasserstein(x_t, xt_fake))
-
-            axes[0, i].scatter(x_t[:, 0], x_t[:, 1], s=1)
-            axes[0, i].set_title(f's = {int(all_slides[i])}')
-            if t_scaler in slides:
-                axes[1, i].scatter(xhat_t[:, 0], xhat_t[:, 1], s=1)
+            if i not in observed_slides:
+                emd.append(wasserstein(xt_fake * scale_factor, X[i].to(device) * scale_factor, power=1))
             else:
-                axes[1, i].set_title('Unobserved')
-            axes[2, i].scatter(xt_fake[:, 0], xt_fake[:, 1], s=1)
-        axes[0, 0].set_ylabel(r'True Kernel, $\kappa(x|y_t)$')
-        axes[1, 0].set_ylabel(r'Approx Kernel, $\hat{\kappa}(x|y_t)$')
-        axes[2, 0].set_ylabel(r'Generator')
-        print("Mean EMD:", np.mean(emd))
+                if (i > 0) & (i < 15):
+                    emd_observed.append(wasserstein(xt_fake * scale_factor, X[i].to(device) * scale_factor, power=1))
 
+            """
+            axes[0, i].scatter(X[i][:, 0], X[i][:, 1], s=1)
+            axes[0, i].set_title(f's = {int(all_slides[i])}')
+            if slide_scaler not in observed_slides:
+                axes[0, i].set_title('Unobserved')
+            axes[1, i].scatter(xt_fake[:, 0].to('cpu'), xt_fake[:, 1].to('cpu'), s=1)
+        axes[0, 0].set_ylabel(r'True Kernel')
+        axes[1, 0].set_ylabel(r'Generator')
         for ax in axes[-1, :]:
             ax.set_xlabel('$x_1$')
 
@@ -111,6 +117,10 @@ for it in range(20000):
 
         plt.tight_layout()
         plt.show()
+        """
+
+        print("Mean EMD (Unobserved):", np.mean(emd))
+        print("Mean EMD (Observed):", np.mean(emd_observed))
 
         """
         x0 = sample_interm(true_data, T.ones(vis_bs))

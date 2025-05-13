@@ -1,5 +1,6 @@
 import torch as T
 from torch import nn, Tensor
+from torch.func import jacrev
 
 # import torch.linalg as LA
 
@@ -55,14 +56,27 @@ class CorrectionInterpolant(nn.Module):
             loss_reg = (loss_reg ** 2).mean()
         return loss_reg
 
-    def dt(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
-        pass
+    def dI_dt(self, x0, x1, t):
+        t = t[..., None] if t.ndim == 1 else t
+
+        def _interpolnet(x0i, x1i, ti):
+            input_ = T.cat([x0i, x1i, ti], dim=0).unsqueeze(0)
+            out = self.interpolnet(input_)
+            return out, out
+
+        (corr_jac, corr_output) = T.vmap(
+            jacrev(_interpolnet, argnums=2, has_aux=True))(x0, x1, t)
+        return (
+            (x1 - x0) + (1 - 2 * t) * corr_output.squeeze() +
+            t * (1 - t) * corr_jac.squeeze()
+        )
 
 
 class AffineTransformInterpolant(nn.Module):
-    # TODO: make class inherent CorrectionInterpolant?
-    def __init__(self, dim: int = 2, h: int = 64, reference_trajectory='linear', correction_scale_factor=None):
+    def __init__(self, dim: int = 2, h: int = 64, reference_trajectory='linear',
+                 correction_scale_factor=None, xt_input=0.01):
         super().__init__()
+        self.xt_input = xt_input
 
         if reference_trajectory == 'linear':
             self.phi_ref = lambda x0, x1, t: x1 * t + x0 * (1 - t)
@@ -72,13 +86,13 @@ class AffineTransformInterpolant(nn.Module):
 
         self.interpolnet = T.nn.Sequential(
             T.nn.Linear(2 * dim + 1, h), T.nn.ELU(),
-            T.nn.Linear(h, h), T.nn.ELU(),
+            # T.nn.Linear(h, h), T.nn.ELU(),
             T.nn.Linear(h, dim)
-            )
+        )
 
         self.shiftnet = T.nn.Sequential(
             T.nn.Linear(1, h), T.nn.ELU(),
-            T.nn.Linear(h, h), T.nn.ELU(),
+            # T.nn.Linear(h, h), T.nn.ELU(),
             T.nn.Linear(h, dim)
         )
 
@@ -90,23 +104,22 @@ class AffineTransformInterpolant(nn.Module):
 
         self.f = None
 
+    def scale_fn(self, t):
+        return 1 - self.c_t(t) * self.scalenet(t)
+
+    def shift_fn(self, t):
+        return self.c_t(t) * self.shiftnet(t)
+
     def forward(self, x0: Tensor, x1: Tensor, t: Tensor) -> Tensor:
         input = T.cat([x0, x1, t], 1)
 
-        # input shape is (bs, 2 + 2 + 1)
-        self.f = self.interpolnet(input)  # save for computation of regularization term
-        # shape of f is (bs, 2)
+        correction = self.interpolnet(input)
+        scale_t = self.scale_fn(t)
+        shift_t = self.shift_fn(t)
 
-        # G = self.scalenet(t)  # (bs, d, d)
-        # scale by t(1-t), then exponentiate as a matrix
-        # scale_t = LA.matrix_exp((t * (1 - t)).view(t.shape[0], 1, 1) * G)
-        # scale_t = T.einsum("bij,bj->bi", scale_t, self.phi_ref(x0, x1, t))
+        self.f =  self.c_t(t) * correction
 
-        # scale_t = T.exp((t * (1 - t)) * self.scalenet(t))
-        scale_t = (1 - (t * (1 - t))) * self.scalenet(t)
-        shift_t = t * (1 - t) * self.shiftnet(t)
-
-        return shift_t + scale_t * self.phi_ref(x0, x1, t) + self.c_t(t) * self.f
+        return shift_t + scale_t * self.phi_ref(x0, x1, t) + self.f
 
     def regularizing_term(self, x0, x1, t, xt_fake):
         loss_reg = self.f

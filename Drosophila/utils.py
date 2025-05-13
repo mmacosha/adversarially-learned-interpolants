@@ -12,25 +12,24 @@ def sample_interm_single_slice(h5ad, bs, slice_ID):
     return T.tensor(X, dtype=T.float32)
 
 
-def sample_interm(h5ad, slice_ID):
+def sample_interm(X, slice_ID):
     # slice_ID is a tensor with dtype = float32
-    slice_ID = slice_ID.cpu().numpy().astype(int).astype(str).tolist()
-
-    slice_series = pd.Series(slice_ID)
-    bs = len(slice_series)
+    bs = len(slice_ID)
     out = np.zeros((bs, 2), dtype=np.float32)
 
     # for each unique slice, sample once
-    for sid, idxs in slice_series.groupby(slice_series).groups.items():
-        count = len(idxs)
-        sub = h5ad[h5ad.obs.slice_ID == sid]
-        chosen = sub.obs.sample(n=count).index
-        coords = sub[chosen].obsm['spatial'][:, :-1]  # shape (bs, D)
-        out[list(idxs), :] = coords
+    i = 0
+    ids, counts = np.unique(slice_ID, return_counts=True)
+    for sid, count in zip(ids, counts):
+        sid = int(sid)
+        sub = X[sid]
+        coords = sub[T.randint(0, sub.shape[0], (count,))]
+        out[i:i + count, :] = coords
+        i += count
 
     return T.tensor(out, dtype=T.float32)
 
-def load_data():
+def load_data(scale_factor=1.):
     h5ad = sc.read_h5ad("../data/Drosophila/drosophila_p100.h5ad")
 
     n_slides = 16
@@ -38,7 +37,7 @@ def load_data():
     for slide_id in range(1, n_slides + 1):
         sub = h5ad[h5ad.obs.slice_ID == str(slide_id)]
         X.append(
-            T.tensor(sub.obsm['spatial'][:, :-1])
+            T.tensor(sub.obsm['spatial'][:, :-1], dtype=T.float32) / scale_factor
         )
 
     return X
