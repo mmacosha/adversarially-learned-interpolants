@@ -26,27 +26,28 @@ import ot
 #
 #     return observed_x
 
-def minibatch_couple_marginals(observed_x):
-    bs, J, d = observed_x.shape
-    otplan = OTPlanSampler('exact')
+def couple_marginals_markov(observed_x, bs, pi):
+    X0 = observed_x[0]
+    n0, d = X0.shape
+    J = len(observed_x)
 
     # Pre-allocate output and index array
-    aligned = T.zeros_like(observed_x)
-    idxs = T.arange(bs)  # each path starts at sample i→i
+    aligned = T.zeros((bs, J, d), device=X0.device)
+    idxs = T.tensor(np.random.choice(np.arange(0, n0), bs, replace=False), dtype=T.int)
 
     # Time 0 is just the original samples
-    aligned[:, 0] = observed_x[:, 0]
+    aligned[:, 0] = X0[idxs]
 
     for j in range(J - 1):
-        pi = otplan.get_map(observed_x[:, j], observed_x[:, j + 1])  # (bs, bs)
+        pi_j = pi[j]
 
         # Draw next-step indices for each path
-        probs = T.from_numpy(pi[idxs])  # (bs, bs)
+        probs = T.from_numpy(pi_j[idxs])  # (bs, bs)
         probs = probs / T.sum(probs, 1, keepdim=True)
-        idxs = T.multinomial(probs, num_samples=1).squeeze(1)  # (bs,)
+        idxs = T.multinomial(probs, num_samples=1, replacement=False).squeeze(1)  # (bs,)
 
         # Record the sampled points at time j+1
-        aligned[:, j + 1] = observed_x[idxs, j + 1]
+        aligned[:, j + 1] = observed_x[j + 1][idxs]
 
     return aligned
 
@@ -92,12 +93,12 @@ def couple_marginals(X, bs, pi=None):
     #    pi1[:, idx_t] → (n0, bs) → transpose → (bs, n0)
     probs0 = pi1[:, idx_t].t()
     probs0 = probs0 / probs0.sum(dim=1, keepdim=True)
-    idx_0 = T.multinomial(probs0, num_samples=1).squeeze(1)
+    idx_0 = T.multinomial(probs0, num_samples=1, replacement=False).squeeze(1)
 
     # 5) sample x1 | xt using rows of pi2
     probs2 = pi2[idx_t, :]  # (bs, n1)
     probs2 = probs2 / probs2.sum(dim=1, keepdim=True)
-    idx_1 = T.multinomial(probs2, num_samples=1).squeeze(1)
+    idx_1 = T.multinomial(probs2, num_samples=1, replacement=False).squeeze(1)
 
     # 6) gather the actual points
     aligned[:, 0] = X0[idx_0]
@@ -119,13 +120,18 @@ def get_cubic_spline_interpolation(observed_x, observed_t, pi=None):
     if isinstance(coupled_x, T.Tensor):
         coupled_x = coupled_x.cpu().numpy()
 
-    return [
-        interpolate.CubicSpline(
-            observed_t[b],
-            coupled_x[b],
-        )
-        for b in range(bs)
-    ]
+    # slower, original implementation
+    # return [
+    #     interpolate.CubicSpline(
+    #         observed_t[b],
+    #         coupled_x[b],
+    #     )
+    #     for b in range(bs)
+    # ]
+
+    t = observed_t[0]  # the times are identical for all batch samples
+    return interpolate.CubicSpline(t, coupled_x, axis=1)
+
 
 
 def get_cubic_spline_interpolants(observed_x, observed_t, all_t, sigma_flow=0.01):
@@ -136,12 +142,13 @@ def get_cubic_spline_interpolants(observed_x, observed_t, all_t, sigma_flow=0.01
     # splines is a bs long list containing the inferred cubic spline objects
 
     bs = observed_t.shape[0]
-    interpolants = T.zeros((bs, all_t.size, 2))
-    for i, t in enumerate(all_t):
-        for b, cs in enumerate(splines):
-            mu_t = cs(t)
-            x = mu_t # + sigma_flow * np.random.randn(mu_t.shape[-1])  # draw a d-dimensional draw from the probability path
-            interpolants[b, i] = T.tensor(x, dtype=T.float32)
+    interpolants = T.tensor(splines(all_t), dtype=T.float32)
+    # interpolants = T.zeros((bs, all_t.size, 2))
+    # for i, t in enumerate(all_t):
+    #     for b, cs in enumerate(splines):
+    #         mu_t = cs(t)
+    #         x = mu_t # + sigma_flow * np.random.randn(mu_t.shape[-1])  # draw a d-dimensional draw from the probability path
+    #         interpolants[b, i] = T.tensor(x, dtype=T.float32)
     return interpolants
 
 

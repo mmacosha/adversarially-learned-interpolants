@@ -54,9 +54,9 @@ if __name__ == '__main__':
 
     print("Avg. EMD: ", np.mean(emds), "\pm", np.std(emds))
 
-    #pl.plot_interpolants(None, [X0, Xt1, Xt2, X1], np.ones(4, dtype=int), mmot_interpolants=[
-    #    coupled_x[:, 0], xhat_t1, coupled_x[:, 1], coupled_x[:, 2]
-    #])
+    pl.plot_interpolants(None, [X0, Xt1, Xt2, X1], np.ones(4, dtype=int), mmot_interpolants=[
+        interpolants[:, 0], interpolants[:, 1], interpolants[:, 2], interpolants[:, 3]
+    ])
 
 
 

@@ -24,7 +24,7 @@ interpolant = SpatialCorrectionInterpolant(
 interpolant = interpolant.to(device)
 
 discriminator = T.nn.Sequential(
-    T.nn.Linear(1 + 1 + 1, g_hidden_disc), T.nn.ELU(),  # add 2 to input_dims to account for time and 1D coordinate
+    T.nn.Linear(dims + 1 + 1, g_hidden_disc), T.nn.ELU(),  # add 2 to input_dims to account for time and 1D coordinate
     T.nn.Linear(g_hidden_disc, g_hidden_disc), T.nn.ELU(),
     T.nn.Linear(g_hidden_disc, 1), T.nn.Sigmoid()
 ).to(device)
@@ -38,7 +38,7 @@ losses = []
 emds = []
 emds_noisy = []
 bs = 1048 * 2
-reg_weight = 0.001
+reg_weight = 0.01
 for it in tqdm(range(40000)):
     sampled_slides = T.tensor(np.random.choice(interm_slides, size=bs, replace=True), dtype=T.int)
     x0, x1, xhat_t, c = sample_data(bs, sampled_slides, dataset)
@@ -49,7 +49,7 @@ for it in tqdm(range(40000)):
     c = c.unsqueeze(-1)
 
     opt_interp.zero_grad()
-    xt_fake = T.cat([interpolant(x0, x1, t, c).sum(-1).unsqueeze(-1), t, c], 1)
+    xt_fake = T.cat([interpolant(x0, x1, t, c), t, c], 1)
     disc_score_fake = discriminator(xt_fake).log()  # (1-discriminator(xt_fake)).log() #
     loss_interp = -disc_score_fake.mean()
     loss_reg = interpolant.regularizing_term(x0, x1, t, xt_fake)
@@ -57,7 +57,7 @@ for it in tqdm(range(40000)):
     opt_interp.step()
 
     opt_disc.zero_grad()
-    xt_real = T.cat([xhat_t.sum(-1).unsqueeze(-1), t, c], 1)
+    xt_real = T.cat([xhat_t, t, c], 1)
     disc_score_real = discriminator(xt_real).log()
     disc_score_fake = (1 - discriminator(xt_fake.detach())).log()
     loss_disc = - (disc_score_real.mean() + disc_score_fake.mean())

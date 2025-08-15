@@ -37,8 +37,33 @@ def sample_interm_4_slides(bs, t, x_t1, x_t2):
     return interm_data
 
 
+def sample_slides(bs, t, x0, x_t1, x_t2, x1, eta=0.001):
+    n_spots_0 = x0.shape[0]
+    n_spots_t1 = x_t1.shape[0]
+    n_spots_t2 = x_t2.shape[0]
+    n_spots_1 = x1.shape[0]
+    dims = x_t1.shape[-1]
+
+    n_0 = T.sum(t == 0).item()
+    n_t1 = T.sum(t == 0.25).item()
+    n_t2 = T.sum(t == 0.75).item()
+    n_1 = T.sum(t == 1).item()
+
+    spots_0 = T.tensor(np.random.choice(n_spots_0, n_0, replace=True), dtype=T.int)
+    spots_t1 = T.tensor(np.random.choice(n_spots_t1, n_t1, replace=True), dtype=T.int)
+    spots_t2 = T.tensor(np.random.choice(n_spots_t2, n_t2, replace=True), dtype=T.int)
+    spots_1 = T.tensor(np.random.choice(n_spots_1, n_1, replace=True), dtype=T.int)
+
+    data = T.zeros((bs, dims), device=x_t1.device)
+    data[t == 0.] = x0[spots_0]  # + T.rand_like(x0[spots_0]) * eta
+    data[t == 0.25] = x_t1[spots_t1]
+    data[t == 0.75] = x_t2[spots_t2]
+    data[t == 1] = x1[spots_1]  # + T.rand_like(x1[spots_1]) * eta
+    return data
+
+
 class Plotter(object):
-    def __init__(self, path_to_images, time_stamps, slide_names=None, coordinate_scaling=100):
+    def __init__(self, path_to_images, time_stamps, slide_names=None, coordinate_scaling=100, ds=None):
         self.rgb_images = []
         self.slide_names = [u for u in ["U2", "U3", "U4", "U5"]] if slide_names is None else slide_names
         for u in self.slide_names:
@@ -49,12 +74,14 @@ class Plotter(object):
         self.time_stamps = time_stamps
         self.n_slides = len(self.time_stamps)
         self.coordinate_scaling = coordinate_scaling
+        self.ds = ds
 
     def overlay_spot_coordinates(self, s_t, slide, ax, observed):
         # x_list is a list of coordinate matrices, e.g. containing four matrices of interpolants
         # observed is a boolean array indicating if a slide was used during training
         t = self.time_stamps[slide]
         ax.imshow(self.rgb_images[slide])
+        s_t = s_t * self.ds.scale.cpu() + self.ds.shift.cpu() if self.ds is not None else s_t
         x = s_t[:, 1] * self.coordinate_scaling
         y = s_t[:, 0] * self.coordinate_scaling
         ax.scatter(x, y, alpha=0.2, color='red')
@@ -134,6 +161,44 @@ def pad_a_like_b(a, b):
     if isinstance(a, float | int):
         return a
     return a.reshape(-1, *([1] * (b.dim() - 1)))
+
+
+class Dataset:
+    def __init__(self, data, timesteps, normalize=True, normalization_type="minmax", device='cuda:0'):
+        self.shift = 0.0
+        self.scale = 1.0
+
+        if normalize and normalization_type == "minmax":
+            min_ = np.stack([x.min(0) for x in data]).min(0)
+            max_ = np.stack([x.max(0) for x in data]).max(0)
+
+            self.shift = min_
+            self.scale = max_ - min_
+            data = [self.normalize(data_t) for data_t in data]
+
+        # if normalize and normalization_type == "scale":
+        #     self.shift = 0.0
+        #     self.scale = math.sqrt(12)
+        #     data = [self.normalize(data_t) for data_t in data]
+
+        self.data = data
+        self.timesteps = timesteps
+        self.shift = T.tensor(self.shift, dtype=T.float32).to(device)
+        self.scale = T.tensor(self.scale, dtype=T.float32).to(device)
+
+    def __getitem__(self, index):
+        return self.data[index]
+
+    def normalize(self, datapoints):
+        return (datapoints - self.shift) / self.scale
+
+    def denormalize(self, datapoints):
+        return datapoints * self.scale + self.shift
+
+    def denormalize_gradfield(self, gradfield):
+        return gradfield * self.scale
+
+
 
 
 if __name__ == '__main__':

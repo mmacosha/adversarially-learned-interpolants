@@ -115,7 +115,7 @@ if __name__ == '__main__':
     n_genes = 10000
     cell_library_size = 3000
     n_cells = 10
-    n_marker_genes = 50
+    n_marker_genes = 15
     for i in tqdm(range(5)):
         marker_genes = T.tensor(np.random.choice(np.arange(n_genes), n_marker_genes, replace=False), dtype=T.int)
         true_distributions, noisy_distributions, spot_coordinates, boarders, offsets = generate_data(10,

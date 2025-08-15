@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 
-from toy_experiment.plot_cubic_splines import couple_marginals
-from torchcfm.optimal_transport import wasserstein
+from toy_experiment.plot_cubic_splines import couple_marginals, couple_marginals_markov
+from torchcfm.optimal_transport import wasserstein, OTPlanSampler
 from utils import Plotter, load_data
 import torch as T
 
@@ -107,50 +107,60 @@ if __name__ == '__main__':
 
     torch.manual_seed(0)
     emds = []
-    n_runs = 20
+    n_runs = 10
+    otplan = OTPlanSampler('exact')
     for i in range(n_runs):
         observed_x = T.zeros((bs, 3, 2))
         x0_indices = T.randint(0, X0.size(0), (bs,))
         observed_x[:, 0] = X0[x0_indices]
 
         # U4 left out
-        xt1_indices = T.randint(0, Xt1.size(0), (bs,))
-        observed_x[:, 1] = Xt1[xt1_indices]
-        t = 0.75
-        t_0 = 0.25
-        t_1 = 1.
+        # xt1_indices = T.randint(0, Xt1.size(0), (bs,))
+        # observed_x[:, 1] = Xt1[xt1_indices]
+        # t = 0.75
+        # t_0 = 0.25
+        # t_1 = 1.
 
         # U3 left out
-        # xt2_indices = T.randint(0, Xt2.size(0), (bs,))
-        # observed_x[:, 1] = Xt2[xt2_indices]
-        # t = 0.25
-        # t_0 = 0.
-        # t_1 = .75
+        xt2_indices = T.randint(0, Xt2.size(0), (bs,))
+        observed_x[:, 1] = Xt2[xt2_indices]
+        t = 0.25
+        t_0 = 0.
+        t_1 = .75
 
         x1_indices = T.randint(0, X1.size(0), (bs,))
         observed_x[:, 2] = X1[x1_indices]
 
-        coupled_x = couple_marginals([X0, Xt1, X1], bs)
+        pi = [otplan.get_map(X0, Xt2), otplan.get_map(Xt2, X1)]
+        coupled_x = couple_marginals_markov([X0, Xt2, X1], bs, pi)
 
         denom = (t_1 - t_0)
         a_t = (t_1 - t) / denom
         b_t = (t - t_0) / denom
 
         # U4 left out
-        xhat_t = a_t * coupled_x[:, 1] + b_t * coupled_x[:, 2]
-        emds.append(wasserstein(Xt2 * scale_factor, xhat_t * scale_factor, power=1))
+        # xhat_t = a_t * coupled_x[:, 1] + b_t * coupled_x[:, 2]
+        # emds.append(wasserstein(Xt2 * scale_factor, xhat_t * scale_factor, power=1))
 
         # U3 left out
-        # xhat_t = a_t * coupled_x[:, 0] + b_t * coupled_x[:, 1]
-        # emds.append(wasserstein(Xt1 * scale_factor, xhat_t * scale_factor, power=1))
+        xhat_t = a_t * coupled_x[:, 0] + b_t * coupled_x[:, 1]
+        emds.append(wasserstein(Xt1 * scale_factor, xhat_t * scale_factor, power=1))
 
 
 
     print("Avg. EMD: ", np.mean(emds), "\pm", np.std(emds))
 
-    # pl.plot_interpolants(None, [X0, Xt1, Xt2, X1], np.ones(4, dtype=int), mmot_interpolants=[
-    #     coupled_x[:, 0], xhat_t1, coupled_x[:, 1], coupled_x[:, 2]
-    # ])
+    pl.plot_interpolants(None, [X0, Xt1, Xt2, X1], np.ones(4, dtype=int), mmot_interpolants=[
+        coupled_x[:, 0], xhat_t, coupled_x[:, 1], coupled_x[:, 2]
+    ])
+    # import matplotlib.pyplot as plt
+    # plt.scatter(Xt1[:, 1], Xt1[:, 0])
+    # plt.scatter(coupled_x[:, 1, 1], coupled_x[:, 1, 0])
+    # plt.show()
+    #
+    # plt.scatter(Xt2[:, 1], Xt2[:, 0])
+    # plt.scatter(xhat_t[:, 1], xhat_t[:, 0])
+    # plt.show()
 
 
 

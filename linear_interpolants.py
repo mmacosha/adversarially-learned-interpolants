@@ -77,8 +77,8 @@ if __name__ == "__main__":
     torch.manual_seed(1)
     np.random.seed(1)
     x = torch.randn(300, 1)
-    n_steps = 100
     # fig, axes = plt.subplots(1, n_steps + 1, figsize=(30, 4), sharex=True, sharey=True)
+    n_steps = 100
     time_steps = torch.linspace(0, 1.0, n_steps + 1)
     x_interpolants = np.zeros((300, n_steps + 1))
     x_interpolants[:, 0] = x.detach().numpy().squeeze()
