@@ -98,16 +98,12 @@ def compute_window_avg(array, window_size):
 
 
 @torch.no_grad()
-def compute_emd(p1, p2, p=1, device='cpu'):
+def compute_emd(p1, p2, device='cpu'):
     a_weights = torch.ones((p1.shape[0],), device=device) / p1.shape[0]
     b_weights = torch.ones((p2.shape[0],), device=device) / p2.shape[0]
 
-    M = pot.dist(p1, p2, p=p)
-    dist = pot.emd2(a_weights, b_weights, M, numItermax=1e7)
-    
-    if p == 2:
-        return math.sqrt(dist)
-    return dist
+    M = pot.dist(p1, p2).sqrt()
+    return pot.emd2(a_weights, b_weights, M, numItermax=1e7)
 
 
 def sample_x_batch(X, batch_size):
@@ -122,7 +118,7 @@ def sample_deterministic_ot_plan(x0, x1, ot_sampler):
 
 def sample_gan_batch(X, batch_size, ot_sampler, 
                      time=None, ot='none', times=(1, 2, 3)):
-    time = time or random.choice(times)
+    time = time or random.choice(times[1:-1])
     x0 = sample_x_batch(X[0], batch_size)
     x1 = sample_x_batch(X[-1], batch_size)
     xt = sample_x_batch(X[time], batch_size)
@@ -196,7 +192,6 @@ def mmot_couple_marginals(X0, X1, Xt, otplan):
     bs, d = X0.shape
 
     device = X0.device
-    aligned = torch.zeros((bs, 3, d), device=device)
 
     # 1) compute the two pairwise plans as numpy arrays
     pi1_np = otplan.get_map(X0, Xt)  # shape (n0, nt)
@@ -212,12 +207,12 @@ def mmot_couple_marginals(X0, X1, Xt, otplan):
     # 4) sample x0 | xt  using columns of pi1
     probs0 = pi1[:, idx_t].t()
     probs0 = probs0 / probs0.sum(dim=1, keepdim=True)
-    idx_0 = torch.multinomial(probs0, num_samples=1, replacement=False).squeeze(1)
+    idx_0 = torch.multinomial(probs0, num_samples=1, replacement=True).squeeze(1)
 
     # 5) sample x1 | xt using rows of pi2
     probs2 = pi2[idx_t, :]  # (bs, n1)
     probs2 = probs2 / probs2.sum(dim=1, keepdim=True)
-    idx_1 = torch.multinomial(probs2, num_samples=1, replacement=False).squeeze(1)
+    idx_1 = torch.multinomial(probs2, num_samples=1, replacement=True).squeeze(1)
 
     # 6) return the coupled points
     return X0[idx_0], X1[idx_1]

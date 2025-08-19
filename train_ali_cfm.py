@@ -10,6 +10,7 @@ from torchdyn.core import NeuralODE
 from torchcfm.utils import torch_wrapper
 import os
 from torchcfm.optimal_transport import OTPlanSampler
+from ST.utils import mmot_couple_marginals
 
 
 class MLP(torch.nn.Module):
@@ -42,24 +43,24 @@ def generate_data(seed, distribution, size):
 
 
 def train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epochs, device, ot=False):
-    X0, _, X1 = (torch.tensor(X, dtype=torch.float32).to(device) for X in data)
+    X0, Xt, X1 = (torch.tensor(X, dtype=torch.float32).to(device) for X in data)
     losses = []
 
     if ot:
         otplan = OTPlanSampler('exact')
-        pi = otplan.get_map(X0, X1)
     else:
-        pi, otplan = None, None
+        otplan = None
 
     for step in trange(n_epochs, desc="Training CFM", leave=False):
         cfm_optimizer.zero_grad()
 
-        if ot:
-            i, j = otplan.sample_map(pi, batch_size, replace=True)
-            x0, x1 = X0[i], X1[j]
-        else:
-            x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
-            x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
+        x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
+        x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
+        if ot == 'ot':
+            x0, x1 = otplan.sample_plan(x0, x1)
+        elif ot == 'mmot':
+            xt = Xt[np.random.choice(np.arange(0, Xt.shape[0]), batch_size)]
+            x0, x1 = mmot_couple_marginals(x0, x1, xt, otplan)
 
         t = torch.rand(x0.shape[0], 1, device=device)
 
@@ -78,9 +79,11 @@ def train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epo
 def main(distribution):
     seed = 0
     size = 5000
-    batch_size = 512
-    train_ali = False
-    ot = False
+    batch_size = 128
+    train_ali = True
+    ot_gan = "independent"
+    gan_loss = 'vanilla'
+    ot_fm = "independent"
 
     data, times = generate_data(seed, distribution, size)
     dims = data[0].shape[-1]
@@ -97,23 +100,23 @@ def main(distribution):
         torch.nn.Linear(d_hidden, 1)
     ).to(device)
 
-    gan_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=1e-5)
-    gan_optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=1e-5)
+    gan_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=1e-4)
+    gan_optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=1e-4)
 
     if train_ali:
         interpolant = train_interpolants(interpolant, discriminator, data, train_timesteps=times,
                                          gan_optimizer_D=gan_optimizer_D, gan_optimizer_G=gan_optimizer_G,
                                          n_epochs=100_001, seed=seed, batch_size=batch_size, correct_coeff=1.,
-                                         device=device, distribution=distribution, ot=ot)
-        torch.save(interpolant.state_dict(), "interpolant_models_toy_data/" + ("OT-" if ot else '') +
+                                         device=device, distribution=distribution, ot=ot_gan, gan_loss=gan_loss)
+        torch.save(interpolant.state_dict(), "interpolant_models_toy_data/" + ot_gan + "-" +
                distribution + str(seed) + '.pth')
     else:
-        interpolant.load_state_dict(torch.load("interpolant_models_toy_data/" + ("OT-" if ot else '') + distribution + str(seed) + '.pth'))
+        interpolant.load_state_dict(torch.load("interpolant_models_toy_data/" + ot_fm + "-" + distribution + str(seed) + '.pth'))
 
     cfm_model = MLP(dims, time_varying=True, w=64).to(device)
     cfm_optimizer = torch.optim.Adam(cfm_model.parameters(), 1e-5)
     cfm_model, losses = train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epochs=40_001,
-                                      device=device, ot=ot)
+                                      device=device, ot=ot_fm)
     plt.plot(np.array(losses)[1000:])
     plt.show()
 
@@ -186,5 +189,5 @@ def plot_trimodal_cfm(X0, Xt, X1, cfm_traj):
 
 
 if __name__ == '__main__':
-    main("knot")
+    main("trimodal")
 

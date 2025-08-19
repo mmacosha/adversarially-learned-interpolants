@@ -28,7 +28,7 @@ from utils import (
     fix_seed,
     integrate_interpolant,
     remove,
-    finish_results_table,
+    finish_results_table
 )
 from interpolants import TrainableInterpolant, Discriminator, MLP
 
@@ -110,9 +110,21 @@ def train_interpolant_with_gan(
 
         # Train discriminator
         gan_optimizer_D.zero_grad()
-        if gan_loss == "RpGAN":
+        if (gan_loss == "RpGAN") or (gan_loss == "R3GAN"):
             # Using the relativistic pairing GAN loss
-            d_loss = torch.nn.functional.softplus((fake_proba - real_proba)).mean()
+            r1 = 0
+            r2 = 0
+            if gan_loss == "R3GAN":
+                xt_fake_ = xt_fake.detach().requires_grad_(True)
+                xt_ = xt.detach().requires_grad_(True)
+                disc_score_fake = discriminator(xt_fake_)
+                disc_score_real = discriminator(xt_)
+                grad_D = torch.autograd.grad(outputs=disc_score_real.sum(), inputs=xt_, create_graph=True)[0]
+                grad_G = torch.autograd.grad(outputs=disc_score_fake.sum(), inputs=xt_fake_, create_graph=True)[0]
+                gamma = 1.
+                r1 = gamma / 2 * ((grad_D.view(gan_batch_size, -1).norm(2, dim=1) - 0) ** 2)
+                r2 = gamma / 2 * ((grad_G.view(gan_batch_size, -1).norm(2, dim=1) - 0) ** 2)
+            d_loss = torch.nn.functional.softplus((fake_proba - real_proba) + r1 + r2).mean()
 
             d_loss.backward()
             gan_optimizer_D.step()
@@ -181,15 +193,19 @@ def train_interpolant_with_gan(
 
 def train_ot_cfm(ot_cfm_model, ot_cfm_optimizer, interpolant, 
                  ot_sampler, train_data, batch_size, min_max,
-                 n_ot_cfm_epochs, metric_prefix="", ot='border', device='cpu'):
+                 n_ot_cfm_epochs, metric_prefix="", ot='border', device='cpu', times=(0, -1)):
     for step in trange(n_ot_cfm_epochs, 
                        desc="Training OT CFM Interpolant", leave=False):
         ot_cfm_optimizer.zero_grad()
 
-        x0, x1 = sample_x0_x1(train_data, batch_size, device=device)
-        
-        if ot == 'border' or ot == 'full':
-            x0, x1 = ot_sampler.sample_plan(x0, x1)
+        if ot == 'mmot':
+            batch = sample_gan_batch(train_data, batch_size, ot_sampler=ot_sampler, ot=ot, times=times)
+            x0, x1, xt, _ = (x.to(device) for x in batch)
+        else:
+            x0, x1 = sample_x0_x1(train_data, batch_size, device=device)
+            if ot == 'border' or ot == 'full':
+                x0, x1 = ot_sampler.sample_plan(x0, x1)
+
         
         t = torch.rand(x0.shape[0], 1, device=device)
         
@@ -256,32 +272,38 @@ def train_ali(cfg):
 
             ot_cfm_model = MLP(dim=cfg.dim, time_varying=True, w=cfg.net_hidden).to(cfg.device)
             ot_cfm_optimizer = torch.optim.Adam(ot_cfm_model.parameters(), 1e-3)
-            
-            # Pretrain interpolant
-            pretain_metric_prefix = f"{metric_prefix}_pretrain"
-            wandb.define_metric(f"{pretain_metric_prefix}/*",
-                                step_metric=f"{pretain_metric_prefix}_step")
-            pretain_interpolant(
-                interpolant, pretrain_optimizer_G, ot_sampler, data,
-                cfg.n_pretrain_epochs, cfg.batch_size, curr_timesteps, 
-                ot=cfg.pretain_ot, metric_prefix=pretain_metric_prefix,
-                device=cfg.device
-            )
 
-            # Train interpolant with GAN
-            interpolant_metric_prefix = f"{metric_prefix}_interpolant"
-            wandb.define_metric(f"{interpolant_metric_prefix}/*",
-                                step_metric=f"{interpolant_metric_prefix}_step")
+            if cfg.train_interpolants:
+                # Pretrain interpolant
+                pretain_metric_prefix = f"{metric_prefix}_pretrain"
+                wandb.define_metric(f"{pretain_metric_prefix}/*",
+                                    step_metric=f"{pretain_metric_prefix}_step")
+                pretain_interpolant(
+                    interpolant, pretrain_optimizer_G, ot_sampler, data,
+                    cfg.n_pretrain_epochs, cfg.batch_size, curr_timesteps,
+                    ot=cfg.pretain_ot, metric_prefix=pretain_metric_prefix,
+                    device=cfg.device
+                )
 
-            train_interpolant_with_gan(
-                interpolant, discriminator, ot_sampler,
-                data,
-                gan_optimizer_G, gan_optimizer_D, 
-                cfg.n_epochs, cfg.batch_size, cfg.correct_coeff,
-                curr_timesteps, seed, min_max, ot=cfg.interpolant_ot, 
-                metric_prefix=interpolant_metric_prefix,
-                device=cfg.device, gan_loss=cfg.gan_loss
-            )
+                # Train interpolant with GAN
+                interpolant_metric_prefix = f"{metric_prefix}_interpolant"
+                wandb.define_metric(f"{interpolant_metric_prefix}/*",
+                                    step_metric=f"{interpolant_metric_prefix}_step")
+
+                train_interpolant_with_gan(
+                    interpolant, discriminator, ot_sampler,
+                    data,
+                    gan_optimizer_G, gan_optimizer_D,
+                    cfg.n_epochs, cfg.batch_size, cfg.correct_coeff,
+                    curr_timesteps, seed, min_max, ot=cfg.interpolant_ot,
+                    metric_prefix=interpolant_metric_prefix,
+                    device=cfg.device, gan_loss=cfg.gan_loss
+                )
+            else:
+                PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
+                        "ali_cfm/wandb/run-20250818_121118-yld5faqr/files/checkpoints")
+                load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
+                interpolant.load_state_dict(load_checkpoint['interpolant'])
             
             # Compute metrics for GAN interpolant
             x0 = data[0].to(cfg.device)
@@ -297,17 +319,23 @@ def train_ali(cfg):
                 denormalize(int_traj[100 * removed_t], min_max)
             )
             int_results[f"seed={seed}"].append(int_emd.item())
-            
-            # Train OT-CFM using GAN interpolant
-            cfm_metric_prefix = f"{metric_prefix}_cfm"
-            wandb.define_metric(f"{cfm_metric_prefix}/*",
-                                step_metric=f"{cfm_metric_prefix}_step")
-            train_ot_cfm(
-                ot_cfm_model, ot_cfm_optimizer, interpolant, ot_sampler,
-                data, cfg.batch_size, min_max, cfg.n_ot_cfm_epochs,
-                metric_prefix=cfm_metric_prefix, ot=cfg.cfm_ot,
-                device=cfg.device
-            )
+
+            if cfg.train_cfm:
+                # Train OT-CFM using GAN interpolant
+                cfm_metric_prefix = f"{metric_prefix}_cfm"
+                wandb.define_metric(f"{cfm_metric_prefix}/*",
+                                    step_metric=f"{cfm_metric_prefix}_step")
+                train_ot_cfm(
+                    ot_cfm_model, ot_cfm_optimizer, interpolant, ot_sampler,
+                    data, cfg.batch_size, min_max, cfg.n_ot_cfm_epochs,
+                    metric_prefix=cfm_metric_prefix, ot=cfg.cfm_ot,
+                    device=cfg.device, times=curr_timesteps
+                )
+            else:
+                PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
+                        "ali_cfm/wandb/run-20250818_143543-7mt2qa6o/files/checkpoints")
+                load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
+                ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
             # Compute metrics for OT-CFM
             node = NeuralODE(torch_wrapper(ot_cfm_model),

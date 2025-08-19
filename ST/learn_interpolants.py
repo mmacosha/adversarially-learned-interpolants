@@ -129,7 +129,7 @@ def train_interpolants(args, plot=False, verbose=True):
             # lambda_gp = 10 / (L ** 2)
             # loss_disc += lambda_gp * gp
 
-            # RpGAN
+            # R3GAN
             # disc_score_negative = discriminator(x_negative)
             disc_score_real = discriminator(xt_real)
             disc_score_fake = discriminator(xt_fake)

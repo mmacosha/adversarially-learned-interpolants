@@ -199,6 +199,51 @@ class Dataset:
         return gradfield * self.scale
 
 
+def mmot_couple_marginals(X0, X1, Xt, otplan):
+    """
+        Samples bs triplets (x0, xt, x1) from the factorized joint
+           π*(x0, xt, x1) ∝ π1*(x0, xt) · π2*(xt, x1) / μt(xt)
+        assuming μt is uniform.
+
+        Args:
+            minibatch samples from the three marginals
+            X0: (bs, d)
+            X1: (bs, d)
+            Xt: (bs, d)
+            bs: number of samples to draw (with replacement)
+
+        Returns:
+            aligned: Tensor of shape (bs, 3, d)
+        """
+    bs, d = X0.shape
+
+    device = X0.device
+
+    # 1) compute the two pairwise plans as numpy arrays
+    pi1_np = otplan.get_map(X0, Xt)  # shape (n0, nt)
+    pi2_np = otplan.get_map(Xt, X1)  # shape (nt, n1)
+
+
+    # 2) convert to torch and move to device
+    pi1 = T.from_numpy(pi1_np).to(device)  # (n0, nt)
+    pi2 = T.from_numpy(pi2_np).to(device)  # (nt, n1)
+
+    idx_t = T.tensor(np.arange(0, bs), dtype=T.int, device=device)
+
+    # 4) sample x0 | xt  using columns of pi1
+    probs0 = pi1[:, idx_t].t()
+    probs0 = probs0 / probs0.sum(dim=1, keepdim=True)
+    idx_0 = T.multinomial(probs0, num_samples=1, replacement=True).squeeze(1)
+
+    # 5) sample x1 | xt using rows of pi2
+    probs2 = pi2[idx_t, :]  # (bs, n1)
+    probs2 = probs2 / probs2.sum(dim=1, keepdim=True)
+    idx_1 = T.multinomial(probs2, num_samples=1, replacement=True).squeeze(1)
+
+    # 6) return the coupled points
+    return X0[idx_0], X1[idx_1]
+
+
 
 
 if __name__ == '__main__':

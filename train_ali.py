@@ -7,6 +7,7 @@ import os
 import imageio
 import glob
 from torchcfm.optimal_transport import OTPlanSampler
+from ST.utils import mmot_couple_marginals
 
 
 def create_gif(save_dir='frames', output_file='distribution.gif', fps=5):
@@ -24,7 +25,8 @@ def sample_gan_batch(X, batch_size, times):
 
 def train(interpolant, discriminator, data,
     gan_optimizer_G, gan_optimizer_D, n_epochs,
-    batch_size, correct_coeff, train_timesteps, seed, distribution, plot_frequency=10_000, device='cpu', ot=False):
+    batch_size, correct_coeff, train_timesteps, seed, distribution, plot_frequency=10_000,
+          device='cpu', ot=False, gan_loss='vanilla'):
 
     torch.manual_seed(seed)
 
@@ -32,9 +34,14 @@ def train(interpolant, discriminator, data,
     train_timesteps_np = train_timesteps.copy()
     train_timesteps = torch.tensor(train_timesteps, dtype=torch.float32).to(device).view(-1, 1)
 
-    if ot:
+    if ot == 'ot':
         otplan = OTPlanSampler('exact')
         pi = otplan.get_map(X0, X1)
+    elif ot == 'mmot':
+        otplan = OTPlanSampler('exact')
+        pi1 = otplan.get_map(X0, Xt)
+        pi2 = otplan.get_map(Xt, X1)
+        pi = [pi1, pi2]
     else:
         pi, otplan = None, None
 
@@ -52,12 +59,13 @@ def train(interpolant, discriminator, data,
         curr_epoch += 1
 
         t, xt = sample_gan_batch(Xt, batch_size, train_timesteps)
-        if ot:
-            i, j = otplan.sample_map(pi, batch_size, replace=True)
-            x0, x1 = X0[i], X1[j]
-        else:
-            x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
-            x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
+        x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
+        x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
+        if ot == 'ot':
+            x0, x1 = otplan.sample_plan(x0, x1)
+        elif ot == 'mmot':
+            x0, x1 = mmot_couple_marginals(x0, x1, xt, otplan)
+
         xt_fake = interpolant(x0, x1, t)
 
         real_inputs = torch.cat([xt, t], dim=-1)
@@ -68,19 +76,35 @@ def train(interpolant, discriminator, data,
 
         # Train discriminator
         gan_optimizer_D.zero_grad()
-        d_real_loss = nn.functional.softplus(-real_proba).mean()
-        d_fake_loss = nn.functional.softplus(fake_proba).mean()
-        d_loss = d_real_loss + d_fake_loss
+        if gan_loss == "RpGAN":
+            # Using the relativistic pairing GAN loss
+            d_loss = torch.nn.functional.softplus((fake_proba - real_proba)).mean()
 
-        d_loss.backward()
-        gan_optimizer_D.step()
+            d_loss.backward()
+            gan_optimizer_D.step()
 
-        # Train generator
-        gan_optimizer_G.zero_grad()
-        fake_inputs = torch.cat([xt_fake, t], dim=-1)
-        fake_proba = discriminator(fake_inputs)
+            # Train generator
+            gan_optimizer_G.zero_grad()
+            real_inputs = torch.cat([xt, t], dim=-1)
+            fake_inputs = torch.cat([xt_fake, t], dim=-1)
 
-        g_loss_ = nn.functional.softplus(-fake_proba).mean()
+            real_proba = discriminator(real_inputs)
+            fake_proba = discriminator(fake_inputs)
+            g_loss_ = torch.nn.functional.softplus((real_proba - fake_proba)).mean()
+        else:
+            d_real_loss = nn.functional.softplus(-real_proba).mean()
+            d_fake_loss = nn.functional.softplus(fake_proba).mean()
+            d_loss = d_real_loss + d_fake_loss
+
+            d_loss.backward()
+            gan_optimizer_D.step()
+
+            # Train generator
+            gan_optimizer_G.zero_grad()
+            fake_inputs = torch.cat([xt_fake, t], dim=-1)
+            fake_proba = discriminator(fake_inputs)
+
+            g_loss_ = nn.functional.softplus(-fake_proba).mean()
         reg_weight_loss = interpolant.regularizing_term(x0, x1, t, xt_fake)
         g_loss = g_loss_ + correct_coeff * reg_weight_loss
 
@@ -91,20 +115,23 @@ def train(interpolant, discriminator, data,
             if distribution == 'knot':
                 plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch)
             else:
-                plot_trimodal(X0, Xt, X1, device, interpolant, epoch, pi, otplan)
+                plot_trimodal(X0, Xt, X1, device, interpolant, epoch, pi, otplan, ot)
 
     return interpolant
 
 
-def plot_trimodal(X0, Xt, X1, device, interpolant, epoch, pi, otplan):
+def plot_trimodal(X0, Xt, X1, device, interpolant, epoch, pi, otplan, ot):
     plt_bs = 64
     with torch.no_grad():
-        if pi is not None:
+        x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), plt_bs)]
+        xt = Xt[np.random.choice(np.arange(0, Xt.shape[0]), plt_bs)]
+        x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), plt_bs)]
+        if ot == 'ot':
             i, j = otplan.sample_map(pi, plt_bs, replace=True)
             x0, x1 = X0[i], X1[j]
-        else:
-            x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), plt_bs)]
-            x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), plt_bs)]
+        elif ot == 'mmot':
+            x0, x1 = mmot_couple_marginals(x0, x1, xt, otplan)
+
 
         t = torch.linspace(0, 1, 100)
         t = torch.tensor(np.tile(t.reshape((-1, 1)), plt_bs), dtype=torch.float32,
