@@ -1,0 +1,32 @@
+wandb_name: ali_cfm
+wandb_mode: online
+saved_run_dir: none
+seed_list: [43, 44, 45, 46] # [42, 43, 44, 45, 46]
+
+dim: 5
+net_hidden: 64
+n_data_dims: ${dim}
+whiten: true
+dataset: multi
+normalize_dataset: true
+device: cuda:0
+batch_size: 128
+correct_coeff: 1.
+
+pretain_ot: full
+interpolant_ot: border
+cfm_ot: border
+
+n_pretrain_epochs: 1_001
+n_epochs: 70_001
+n_ot_cfm_epochs: 2_001
+num_int_steps_per_timestep: 100
+use_pca: false
+gan_loss: vanilla
+
+train_interpolants: True
+train_cfm: True
+
+hydra:
+  run:
+    dir: .
