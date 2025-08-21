@@ -384,8 +384,7 @@ def train_ali(cfg):
 from hydra import compose, initialize
 
 if __name__ == "__main__":
-    # config_files = ["rpgan_mmot_multi.yaml", "rpgan_mmot_ali_cite.yaml", "ali.yaml", "rpgan_mmot_50cite.yaml"]
-    config_files = ["ali_eb.yaml"]
+    config_files = ["ali.yaml"]
 
     for cfg_name in config_files:
         with initialize(config_path="./configs"):
