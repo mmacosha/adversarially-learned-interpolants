@@ -59,8 +59,12 @@ def train(interpolant, discriminator, data,
         curr_epoch += 1
 
         t, xt = sample_gan_batch(Xt, batch_size, train_timesteps)
-        x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
-        x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
+        if distribution == 'knot':
+            x0 = Xt[np.zeros(batch_size)]
+            x1 = Xt[-np.ones(batch_size)]
+        else:
+            x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
+            x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
         if ot == 'ot':
             x0, x1 = otplan.sample_plan(x0, x1)
         elif ot == 'mmot':
@@ -183,8 +187,10 @@ def plot_trimodal(X0, Xt, X1, device, interpolant, epoch, pi, otplan, ot):
 def plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch):
     plt_bs = 64
     with torch.no_grad():
-        x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), plt_bs)]
-        x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), plt_bs)]
+        # x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), plt_bs)]
+        # x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), plt_bs)]
+        x0 = Xt[np.zeros(plt_bs)]
+        x1 = Xt[-np.ones(plt_bs)]
         t = torch.tensor(np.tile(train_timesteps_np.reshape((-1, 1)), plt_bs), dtype=torch.float32,
                          device=device)
         t0 = torch.zeros((1, plt_bs), device=device)

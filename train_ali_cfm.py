@@ -78,7 +78,7 @@ def train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epo
 
 def main(distribution):
     seed = 0
-    size = 5000
+    size = 30
     batch_size = 128
     train_ali = True
     ot_gan = "independent"
@@ -100,8 +100,8 @@ def main(distribution):
         torch.nn.Linear(d_hidden, 1)
     ).to(device)
 
-    gan_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=1e-4)
-    gan_optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=1e-4)
+    gan_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=1e-3)
+    gan_optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=1e-3)
 
     if train_ali:
         interpolant = train_interpolants(interpolant, discriminator, data, train_timesteps=times,
@@ -189,5 +189,5 @@ def plot_trimodal_cfm(X0, Xt, X1, cfm_traj):
 
 
 if __name__ == '__main__':
-    main("trimodal")
+    main("knot")
 

@@ -115,8 +115,8 @@ def train_interpolant_with_gan(
             r1 = 0
             r2 = 0
             if gan_loss == "R3GAN":
-                xt_fake_ = xt_fake.detach().requires_grad_(True)
-                xt_ = xt.detach().requires_grad_(True)
+                xt_fake_ = torch.cat([xt_fake, t], dim=-1).detach().requires_grad_(True)
+                xt_ = torch.cat([xt, t], dim=-1).detach().requires_grad_(True)
                 disc_score_fake = discriminator(xt_fake_)
                 disc_score_real = discriminator(xt_)
                 grad_D = torch.autograd.grad(outputs=disc_score_real.sum(), inputs=xt_, create_graph=True)[0]
@@ -227,7 +227,7 @@ def train_ot_cfm(ot_cfm_model, ot_cfm_optimizer, interpolant,
         })
 
 
-@hydra.main(config_path="./configs", config_name="ali")
+# @hydra.main(config_path="./configs", config_name="ali")
 def train_ali(cfg):
     os.environ["HYDRA_FULL_ERROR"] = '1'
     seed_list = cfg.seed_list
@@ -243,9 +243,9 @@ def train_ali(cfg):
     int_results, cfm_results = {}, {}
 
     run = wandb.init(
-        name=f"{cfg.wandb_name}-{cfg.dataset}-{cfg.n_data_dims}D",
+        name=f"{cfg.gan_loss}-{cfg.wandb_name}-{cfg.dataset}-{cfg.n_data_dims}D",
         mode=cfg.wandb_mode,
-        project="ali-cfm",
+        project=f"ali-cfm-{cfg.dataset}-{cfg.n_data_dims}D",
         config=OmegaConf.to_object(cfg)
     )
 
@@ -301,7 +301,7 @@ def train_ali(cfg):
                 )
             else:
                 PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
-                        "ali_cfm/wandb/run-20250818_121118-yld5faqr/files/checkpoints")
+                        "ali_cfm/wandb/run-20250820_150953-wflnf5q8/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 interpolant.load_state_dict(load_checkpoint['interpolant'])
             
@@ -333,7 +333,7 @@ def train_ali(cfg):
                 )
             else:
                 PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
-                        "ali_cfm/wandb/run-20250818_143543-7mt2qa6o/files/checkpoints")
+                        "ali_cfm/wandb/run-20250820_150953-wflnf5q8/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
@@ -352,6 +352,10 @@ def train_ali(cfg):
                 ot_cfm_traj[100 * removed_t].float().to(cfg.device),
             )
             cfm_results[f"seed={seed}"].append(cfm_emd.item())
+
+            wandb.log({
+                f"{metric_prefix}_cfm/cfm_result": cfm_emd.item()
+            })
 
             # Save artifacts for given seed and t
             checkpoint = {
@@ -376,6 +380,14 @@ def train_ali(cfg):
     
     wandb.finish()
 
-    
+
+from hydra import compose, initialize
+
 if __name__ == "__main__":
-    train_ali()
+    # config_files = ["rpgan_mmot_multi.yaml", "rpgan_mmot_ali_cite.yaml", "ali.yaml", "rpgan_mmot_50cite.yaml"]
+    config_files = ["ali_eb.yaml"]
+
+    for cfg_name in config_files:
+        with initialize(config_path="./configs"):
+            cfg = compose(config_name=cfg_name)
+            train_ali(cfg)  # call directly with config
