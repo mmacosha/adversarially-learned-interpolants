@@ -267,8 +267,8 @@ def train_ali(cfg):
             discriminator = Discriminator(
                 cfg.dim + 1, cfg.net_hidden, apply_sigmoid=False
             ).to(cfg.device)
-            gan_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=1e-3)
-            gan_optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=1e-4)
+            gan_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=cfg.lr_G)
+            gan_optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=cfg.lr_D)
 
             ot_cfm_model = MLP(dim=cfg.dim, time_varying=True, w=cfg.net_hidden).to(cfg.device)
             ot_cfm_optimizer = torch.optim.Adam(ot_cfm_model.parameters(), 1e-3)
