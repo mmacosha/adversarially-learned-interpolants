@@ -301,7 +301,7 @@ def train_ali(cfg):
                 )
             else:
                 PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
-                        "ali_cfm/wandb/run-20250820_150953-wflnf5q8/files/checkpoints")
+                        "ali_cfm/wandb/run-20250821_143025-58qohco7/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 interpolant.load_state_dict(load_checkpoint['interpolant'])
             
@@ -333,7 +333,7 @@ def train_ali(cfg):
                 )
             else:
                 PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
-                        "ali_cfm/wandb/run-20250820_150953-wflnf5q8/files/checkpoints")
+                        "ali_cfm/wandb/run-20250821_143025-58qohco7/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
@@ -344,12 +344,12 @@ def train_ali(cfg):
             with torch.no_grad():
                 ot_cfm_traj = node.trajectory(
                     denormalize(data[0], min_max).to(cfg.device),
-                    t_span=torch.linspace(0, 1, num_int_steps + 1),
+                    t_span=torch.linspace(0, removed_t / len(timesteps_list), num_int_steps + 1),
                 )
 
             cfm_emd = compute_emd(
                 denormalize(data[removed_t], min_max).to(cfg.device), 
-                ot_cfm_traj[100 * removed_t].float().to(cfg.device),
+                ot_cfm_traj[-1].float().to(cfg.device),
             )
             cfm_results[f"seed={seed}"].append(cfm_emd.item())
 
