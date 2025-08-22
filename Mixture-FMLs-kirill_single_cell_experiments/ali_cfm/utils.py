@@ -116,13 +116,13 @@ def sample_deterministic_ot_plan(x0, x1, ot_sampler):
     return x0, x1[pi.argmax(axis=1)]
 
 
-def sample_gan_batch(X, batch_size, ot_sampler, 
-                     time=None, ot='none', times=(1, 2, 3)):
+def sample_gan_batch(X, batch_size, ot_sampler, divisor,
+                     time=None, ot='none', times=(0, 1, 2, 3)):
     time = time or random.choice(times[1:-1])
     x0 = sample_x_batch(X[0], batch_size)
     x1 = sample_x_batch(X[-1], batch_size)
     xt = sample_x_batch(X[time], batch_size)
-    t = torch.ones(batch_size, 1) * time / 4
+    t = torch.ones(batch_size, 1) * time / divisor
 
     if ot == 'full':
         x0, xt = sample_deterministic_ot_plan(x0, xt, ot_sampler)

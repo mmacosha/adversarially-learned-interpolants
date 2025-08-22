@@ -41,9 +41,7 @@ def pretain_interpolant(interpolant, pretrain_optimizer_G, ot_sampler,
     
     for epoch in trange(n_pretrain_epochs, desc="Pretraining Interpolant", leave=False):
         pretrain_optimizer_G.zero_grad()
-        batch = sample_gan_batch(train_data, gan_batch_size, 
-                                         ot_sampler=ot_sampler,
-                                         ot=ot, times=train_timesteps)
+        batch = sample_gan_batch(train_data, gan_batch_size, divisor=max(train_timesteps), ot_sampler=ot_sampler, ot=ot, times=train_timesteps)
         x0, x1, xt, t = (x.to(device) for x in batch)
         xt_fake = interpolant(x0, x1, t)
 
@@ -78,9 +76,8 @@ def train_interpolant_with_gan(
         if epoch % 5_000 == 0:
             with torch.no_grad():
                 for time in range(1, 4):
-                    test_batch = sample_gan_batch(
-                        data, 2300, ot_sampler=ot_sampler, 
-                        time=time, ot='border')
+                    test_batch = sample_gan_batch(data, 2300, divisor=t_max,
+                                                  ot_sampler=ot_sampler, time=time, ot='border')
                     x0_test, x1_test, xt_test, t_test = (
                         x.to(device) for x in test_batch
                     )
@@ -96,9 +93,7 @@ def train_interpolant_with_gan(
                     })
                     
 
-        batch = sample_gan_batch(data, gan_batch_size, 
-                                 ot_sampler=ot_sampler, ot=ot, 
-                                 times=train_timesteps)
+        batch = sample_gan_batch(data, gan_batch_size, divisor=t_max, ot_sampler=ot_sampler, ot=ot, times=train_timesteps)
         x0, x1, xt, t = (x.to(device) for x in batch)
         xt_fake = interpolant(x0, x1, t)
 
@@ -168,8 +163,7 @@ def train_interpolant_with_gan(
 
         if epoch % plot_freaquency == 0:
             with torch.no_grad():
-                batch = sample_gan_batch(data, 256, ot_sampler=ot_sampler, 
-                                         ot='full', times=train_timesteps)
+                batch = sample_gan_batch(data, 256, divisor=t_max, ot_sampler=ot_sampler, ot='full', times=train_timesteps)
                 x0, x1, xt, t = (x.to(device) for x in batch)
                 xt_fake = interpolant(x0, x1, t)
 
@@ -199,7 +193,8 @@ def train_ot_cfm(ot_cfm_model, ot_cfm_optimizer, interpolant,
         ot_cfm_optimizer.zero_grad()
 
         if ot == 'mmot':
-            batch = sample_gan_batch(train_data, batch_size, ot_sampler=ot_sampler, ot=ot, times=times)
+            t_max = max(times)
+            batch = sample_gan_batch(train_data, batch_size, divisor=t_max, ot_sampler=ot_sampler, ot=ot, times=times)
             x0, x1, xt, _ = (x.to(device) for x in batch)
         else:
             x0, x1 = sample_x0_x1(train_data, batch_size, device=device)
@@ -238,7 +233,7 @@ def train_ali(cfg):
                                 cfg.normalize_dataset, cfg.whiten)
     timesteps_list = [t for t in range(len(data))]
     # This code assumes that timesteps are in [0, ..., T_max]
-    num_int_steps = cfg.num_int_steps_per_timestep * max(timesteps_list)
+    num_int_steps = cfg.num_int_steps_per_timestep # * max(timesteps_list)
     
     int_results, cfm_results = {}, {}
 
@@ -301,7 +296,7 @@ def train_ali(cfg):
                 )
             else:
                 PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
-                        "ali_cfm/wandb/run-20250821_143025-58qohco7/files/checkpoints")
+                        "ali_cfm/wandb/run-20250821_165420-v6vnpqev/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 interpolant.load_state_dict(load_checkpoint['interpolant'])
             
@@ -314,9 +309,11 @@ def train_ali(cfg):
                 x0, x1, num_int_steps, interpolant,
             )
 
+            t = removed_t / (len(timesteps_list) - 1)
+
             int_emd = compute_emd(
                 denormalize(data[removed_t], min_max), 
-                denormalize(int_traj[100 * removed_t], min_max)
+                denormalize(int_traj[int(100 * t)], min_max)
             )
             int_results[f"seed={seed}"].append(int_emd.item())
 
@@ -333,7 +330,7 @@ def train_ali(cfg):
                 )
             else:
                 PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
-                        "ali_cfm/wandb/run-20250821_143025-58qohco7/files/checkpoints")
+                        "ali_cfm/wandb/run-20250819_185803-dd7995dc/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
@@ -344,7 +341,7 @@ def train_ali(cfg):
             with torch.no_grad():
                 ot_cfm_traj = node.trajectory(
                     denormalize(data[0], min_max).to(cfg.device),
-                    t_span=torch.linspace(0, removed_t / len(timesteps_list), num_int_steps + 1),
+                    t_span=torch.linspace(0, t, num_int_steps + 1),
                 )
 
             cfm_emd = compute_emd(
@@ -384,9 +381,23 @@ def train_ali(cfg):
 from hydra import compose, initialize
 
 if __name__ == "__main__":
-    config_files = ["ali.yaml"]
-
-    for cfg_name in config_files:
-        with initialize(config_path="./configs"):
-            cfg = compose(config_name=cfg_name)
-            train_ali(cfg)  # call directly with config
+    config_files = ["ali_local.yaml"]
+    with initialize(config_path="./configs"):
+        cfg = compose(config_name="ali_local.yaml")
+        train_ali(cfg)
+    #
+    # for dataset in ["multi", "cite"]:
+    #     for dim in [5, 50, 100]:
+    #         if dim > 5:
+    #             whiten = False
+    #             net_hidden = 1024
+    #         else:
+    #             whiten = True
+    #             net_hidden = 64
+    #         with initialize(config_path="./configs"):
+    #             cfg = compose(config_name="ali_local.yaml")
+    #             cfg.dataset = dataset
+    #             cfg.dim = dim
+    #             cfg.whiten = whiten
+    #             cfg.net_hidden = net_hidden
+    #             train_ali(cfg)  # call directly with config
