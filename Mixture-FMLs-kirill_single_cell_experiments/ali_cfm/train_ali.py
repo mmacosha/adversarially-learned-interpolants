@@ -256,7 +256,7 @@ def train_ali(cfg):
             metric_prefix = f"t={removed_t}_{seed=}"
             
             # Configure neural networks
-            interpolant = TrainableInterpolant(cfg.dim, cfg.net_hidden, 0.01, True).to(cfg.device)
+            interpolant = TrainableInterpolant(cfg.dim, cfg.net_hidden, cfg.t_smooth, True).to(cfg.device)
             pretrain_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=1e-3)
 
             discriminator = Discriminator(
@@ -381,7 +381,7 @@ def train_ali(cfg):
 from hydra import compose, initialize
 
 if __name__ == "__main__":
-    config_files = ["ali_local.yaml"]
+    config_files = ["ali.yaml"]
     with initialize(config_path="./configs"):
         cfg = compose(config_name="ali_local.yaml")
         train_ali(cfg)
