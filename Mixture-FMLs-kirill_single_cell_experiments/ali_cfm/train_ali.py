@@ -383,7 +383,7 @@ from hydra import compose, initialize
 if __name__ == "__main__":
     config_files = ["ali.yaml"]
     with initialize(config_path="./configs"):
-        cfg = compose(config_name="ali_local.yaml")
+        cfg = compose(config_name="ali.yaml")
         train_ali(cfg)
     #
     # for dataset in ["multi", "cite"]:
