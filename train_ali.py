@@ -17,9 +17,10 @@ def create_gif(save_dir='frames', output_file='distribution.gif', fps=5):
 
 
 def sample_gan_batch(X, batch_size, times):
-    # X shape (size, dims)
-    idx = np.random.choice(np.arange(0, X.shape[0]), batch_size)
-    return times[idx], X[idx]
+    # X shape (n, len(times), dims)
+    idx = np.random.randint(0, X.shape[0])
+    t_idx = np.random.choice(np.arange(0, times[1:-1].shape[0]), batch_size)
+    return times[t_idx], X[idx, t_idx]
 
 
 
@@ -59,16 +60,14 @@ def train(interpolant, discriminator, data,
         curr_epoch += 1
 
         t, xt = sample_gan_batch(Xt, batch_size, train_timesteps)
-        if distribution == 'knot':
-            x0 = Xt[np.zeros(batch_size)]
-            x1 = Xt[-np.ones(batch_size)]
+        if ot == 'ot':
+            i, j = otplan.sample_map(pi, batch_size, replace=True)
+            x0, x1 = X0[i], X1[j]
+        elif ot == 'mmot':
+            x0, x1 = mmot_couple_marginals(x0, x1, xt, otplan)
         else:
             x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
             x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
-        if ot == 'ot':
-            x0, x1 = otplan.sample_plan(x0, x1)
-        elif ot == 'mmot':
-            x0, x1 = mmot_couple_marginals(x0, x1, xt, otplan)
 
         xt_fake = interpolant(x0, x1, t)
 
@@ -117,7 +116,7 @@ def train(interpolant, discriminator, data,
 
         if epoch % plot_frequency == 0:
             if distribution == 'knot':
-                plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch)
+                plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch, pi, otplan)
             else:
                 plot_trimodal(X0, Xt, X1, device, interpolant, epoch, pi, otplan, ot)
 
@@ -184,13 +183,15 @@ def plot_trimodal(X0, Xt, X1, device, interpolant, epoch, pi, otplan, ot):
         plt.close()
 
 
-def plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch):
-    plt_bs = 64
+def plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch, pi, otplan):
+    plt_bs = 10
     with torch.no_grad():
         # x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), plt_bs)]
         # x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), plt_bs)]
-        x0 = Xt[np.zeros(plt_bs)]
-        x1 = Xt[-np.ones(plt_bs)]
+        if pi is not None:
+            i, j = otplan.sample_map(pi, plt_bs, replace=True)
+            x0 = X0[i]
+            x1 = X1[j]
         t = torch.tensor(np.tile(train_timesteps_np.reshape((-1, 1)), plt_bs), dtype=torch.float32,
                          device=device)
         t0 = torch.zeros((1, plt_bs), device=device)
@@ -203,16 +204,21 @@ def plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch):
         xt_fake = interpolant(x0_expanded, x1_expanded, t, training=False).cpu().numpy()
 
         plt.figure(figsize=(5, 5))
+        plt.rcParams.update({'font.size': 15})
         plt.plot(xt_fake[..., 0], xt_fake[..., 1], color='blue', alpha=0.2)
         plt.scatter(x0[:, 0].cpu().numpy(), x0[:, 1].cpu().numpy(), color='red', alpha=0.5, s=1)
         plt.scatter(x1[:, 0].cpu().numpy(), x1[:, 1].cpu().numpy(), color='red', alpha=0.5, s=1)
-        plt.scatter(Xt[:, 0].cpu().numpy(), Xt[:, 1].cpu().numpy(), color='red', label='real data', alpha=0.5, s=1)
-        plt.title(f"Epoch {epoch}")
+        plt.scatter(Xt[..., 0].cpu().numpy(), Xt[..., 1].cpu().numpy(), color='red', alpha=0.5, s=1)
+        if epoch is not None:
+            plt.title(f"Epoch {epoch}")
         plt.tight_layout()
-        plt.legend(loc='upper right')
+        # plt.legend(loc='upper right')
 
         save_dir = "knot_ali_frames"
-        filename = os.path.join(save_dir, f"frame_{epoch:06d}.png")
+        if epoch is not None:
+            filename = os.path.join(save_dir, f"frame_{epoch:06d}.png")
+        else:
+            filename = os.path.join(save_dir, f"frame_final.png")
         plt.savefig(filename, dpi=150)
         plt.close()
 

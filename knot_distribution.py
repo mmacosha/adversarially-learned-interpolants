@@ -13,7 +13,8 @@ def x(t, std):
     x3 = 3 * (t3 - 0.5)
 
     x = np.concatenate([x1, x2, x3])
-    return x + np.random.randn(*x.shape) * std
+    return x.reshape((-1, 1)) + np.random.randn(x.shape[0], 10) * std
+    # return x + np.random.randn(*x.shape) * std
 
 
 def y(t, std):
@@ -27,13 +28,16 @@ def y(t, std):
     y3 = np.tanh(5 * (t3 - 1)) / 2 + 0.5
 
     y = np.concatenate([y1, y2, y3])
-    return y + np.random.randn(*y.shape) * std
+    return y.reshape((-1, 1)) + np.random.randn(y.shape[0], 10) * std
+    # return y + np.random.randn(*y.shape) * std
 
 
 def loop_distribution(size, std):
     assert size % 3 == 0
     t = np.linspace(0, 3, size)
     xt = np.stack([x(t, std), y(t, std)]).T
-    x0 = np.random.randn(2, size).T * std + np.array([-3, 1])
-    x1 = np.random.randn(2, size).T * std + np.array([3, 1])
-    return x0, xt, x1, t / 3
+    # x0 = np.random.randn(2, size, 10).T * std + np.array([-3, 1])
+    # x1 = np.random.randn(2, size, 10).T * std + np.array([3, 1])
+    x0 = xt[:, 0]
+    x1 = xt[:, -1]
+    return x0, xt[:, 1:-1], x1, t / 3

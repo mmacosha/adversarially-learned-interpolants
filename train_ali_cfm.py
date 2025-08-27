@@ -3,6 +3,7 @@ from knot_distribution import loop_distribution
 from trimodal_distribution import generate_marginals
 import numpy as np
 from train_ali import train as train_interpolants
+from train_ali import plot_knot
 from learnable_interpolants import CorrectionInterpolant
 import torch
 from tqdm.auto import trange
@@ -48,6 +49,7 @@ def train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epo
 
     if ot:
         otplan = OTPlanSampler('exact')
+        pi = otplan.get_map(X0, X1)
     else:
         otplan = None
 
@@ -57,7 +59,8 @@ def train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epo
         x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
         x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
         if ot == 'ot':
-            x0, x1 = otplan.sample_plan(x0, x1)
+            i, j = otplan.sample_map(pi, batch_size, replace=True)
+            x0, x1 = X0[i], X1[j]
         elif ot == 'mmot':
             xt = Xt[np.random.choice(np.arange(0, Xt.shape[0]), batch_size)]
             x0, x1 = mmot_couple_marginals(x0, x1, xt, otplan)
@@ -78,12 +81,12 @@ def train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epo
 
 def main(distribution):
     seed = 0
-    size = 30
+    size = 3000
     batch_size = 128
-    train_ali = True
-    ot_gan = "independent"
+    train_ali = False
+    ot_gan = "ot"
     gan_loss = 'vanilla'
-    ot_fm = "independent"
+    ot_fm = "ot"
 
     data, times = generate_data(seed, distribution, size)
     dims = data[0].shape[-1]
@@ -112,10 +115,18 @@ def main(distribution):
                distribution + str(seed) + '.pth')
     else:
         interpolant.load_state_dict(torch.load("interpolant_models_toy_data/" + ot_fm + "-" + distribution + str(seed) + '.pth'))
+        X0, Xt, X1 = (torch.tensor(X, dtype=torch.float32).to(device) for X in data)
+        if ot_gan == 'ot':
+            from torchcfm.optimal_transport import OTPlanSampler
+            otplan = OTPlanSampler('exact')
+            pi = otplan.get_map(X0, X1)
+        else:
+            otplan, pi = None, None
+        plot_knot(X0, Xt, X1, times, device, interpolant, None, pi, otplan)
 
     cfm_model = MLP(dims, time_varying=True, w=64).to(device)
-    cfm_optimizer = torch.optim.Adam(cfm_model.parameters(), 1e-5)
-    cfm_model, losses = train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epochs=40_001,
+    cfm_optimizer = torch.optim.Adam(cfm_model.parameters(), 1e-3)
+    cfm_model, losses = train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epochs=2_001,
                                       device=device, ot=ot_fm)
     plt.plot(np.array(losses)[1000:])
     plt.show()
@@ -124,7 +135,7 @@ def main(distribution):
                      solver="dopri5", sensitivity="adjoint").to(device)
 
     num_int_steps = 1000
-    X0 = torch.tensor(data[0][np.random.choice(np.arange(0, data[0].shape[0]), 64)], dtype=torch.float32).to(device)
+    X0 = torch.tensor(data[0], dtype=torch.float32).to(device)
     with torch.no_grad():
         cfm_traj = node.trajectory(X0, t_span=torch.linspace(0, 1, num_int_steps + 1),
         )
@@ -132,13 +143,19 @@ def main(distribution):
 
     if distribution == 'knot':
         plt.figure(figsize=(5, 5))
+        plt.rcParams.update({'font.size': 15})
         plt.plot(cfm_traj[..., 0], cfm_traj[..., 1], color='blue', alpha=0.2)
         plt.scatter(data[0][:, 0], data[0][:, 1], color='red', alpha=0.5, s=1)
-        plt.scatter(data[1][:, 0], data[1][:, 1], color='red', label='real data', alpha=0.5, s=1)
-        plt.scatter(data[2][:, 0], data[2][:, 1], color='red', alpha=0.5, s=1)
-        plt.title(f"ALI-CFM Trajectories")
+        xt = data[1].reshape(-1, 2)
+        labels = np.tile(np.arange(size - 2) % 10, 10)
+
+        plt.scatter(data[1][..., 0], data[1][..., 1], color='red', alpha=0.5, s=1)
+        # plt.scatter(xt[..., 0], xt[..., 1], c=labels, alpha=0.5, s=1, cmap='tab10')
+        # plt.scatter(data[2][:, 0], data[2][:, 1], color='red', alpha=0.5, s=1)
+        # plt.title(f"ALI-CFM Trajectories")
+        plt.xlim(-3.5, 3.5)
         plt.tight_layout()
-        plt.legend(loc='upper right')
+        # plt.legend(loc='upper right')
 
         save_dir = f"{distribution}_ali_frames"
         filename = os.path.join(save_dir, f"ALI_CFM.png")
