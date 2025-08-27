@@ -296,7 +296,7 @@ def train_ali(cfg):
                 )
             else:
                 PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
-                        "ali_cfm/wandb/run-20250821_165420-v6vnpqev/files/checkpoints")
+                        "ali_cfm/wandb/run-20250822_091600-1kw46hn4/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 interpolant.load_state_dict(load_checkpoint['interpolant'])
             
@@ -330,7 +330,7 @@ def train_ali(cfg):
                 )
             else:
                 PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/"
-                        "ali_cfm/wandb/run-20250819_185803-dd7995dc/files/checkpoints")
+                        "ali_cfm/wandb/run-20250822_091600-1kw46hn4/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
@@ -340,8 +340,8 @@ def train_ali(cfg):
 
             with torch.no_grad():
                 ot_cfm_traj = node.trajectory(
-                    denormalize(data[0], min_max).to(cfg.device),
-                    t_span=torch.linspace(0, t, num_int_steps + 1),
+                    denormalize(data[removed_t - 1], min_max).to(cfg.device),
+                    t_span=torch.linspace((removed_t - 1) / (len(timesteps_list) - 1), t, num_int_steps + 1),
                 )
 
             cfm_emd = compute_emd(
@@ -355,15 +355,15 @@ def train_ali(cfg):
             })
 
             # Save artifacts for given seed and t
-            checkpoint = {
-                "interpolant": interpolant.state_dict(),
-                "discriminator": discriminator.state_dict(),
-                "ot_cfm_model": ot_cfm_model.state_dict(),
-            }
-            save_path = os.path.join(
-                run.dir, "checkpoints", f"{metric_prefix}_ali_cfm.pth"
-            )
-            torch.save(checkpoint, save_path)
+            #checkpoint = {
+            #    "interpolant": interpolant.state_dict(),
+            #    "discriminator": discriminator.state_dict(),
+            #    "ot_cfm_model": ot_cfm_model.state_dict(),
+            #}
+            #save_path = os.path.join(
+            #    run.dir, "checkpoints", f"{metric_prefix}_ali_cfm.pth"
+            #)
+            #torch.save(checkpoint, save_path)
 
     int_results = wandb.Table(
         dataframe=finish_results_table(int_results, timesteps_list[1: -1])
@@ -381,11 +381,10 @@ def train_ali(cfg):
 from hydra import compose, initialize
 
 if __name__ == "__main__":
-    config_files = ["ali.yaml"]
     with initialize(config_path="./configs"):
-        cfg = compose(config_name="ali.yaml")
+        cfg = compose(config_name="ali_local.yaml")
         train_ali(cfg)
-    #
+
     # for dataset in ["multi", "cite"]:
     #     for dim in [5, 50, 100]:
     #         if dim > 5:

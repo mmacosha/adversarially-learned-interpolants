@@ -9,7 +9,7 @@ from typing import List
 from sklearn.preprocessing import StandardScaler
 
 
-DATA_PATH = Path("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/data/")
+DATA_PATH = Path("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/data")
 
 
 class Dataset:
@@ -116,7 +116,11 @@ def get_dataset(
         X = [
             data[adata.obs["sample_labels"].cat.codes == t] for t in range(n_times)
         ]
-    
+
+    elif name == 'cell_tracking':
+        boolean_masks = np.load("/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy")
+        X = [np.argwhere(boolean_masks[i]) for i in range(boolean_masks.shape[0])]
+
     else:
         raise ValueError(f"Unknown dataset {name}")
     
