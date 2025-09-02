@@ -1,2 +1,13 @@
+# logs and packages
 wandb/
 env/
+
+# Python aux files
+*.DS_Store
+*__pycache__/
+*.pyc
+*.ipynb_checkpoints
+*.vscode/
+
+# data folders
+data/single_cell/
