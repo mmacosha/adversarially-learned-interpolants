@@ -147,7 +147,9 @@ def train_ali(cfg):
             x0, x1 = ot_sampler.sample_plan(x0, x1)
 
             int_traj = integrate_interpolant(
-                x0, x1, cfg.num_int_steps_per_timestep, interpolant,
+                x0, x1, 
+                cfg.num_int_steps_per_timestep * timesteps_list[-1], 
+                interpolant,
             )
 
             int_emd = compute_emd(
