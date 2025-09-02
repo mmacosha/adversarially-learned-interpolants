@@ -205,10 +205,10 @@ def plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch, pi, ot
 
         plt.figure(figsize=(5, 5))
         plt.rcParams.update({'font.size': 15})
-        plt.plot(xt_fake[..., 0], xt_fake[..., 1], color='blue', alpha=0.2)
-        plt.scatter(x0[:, 0].cpu().numpy(), x0[:, 1].cpu().numpy(), color='red', alpha=0.5, s=1)
-        plt.scatter(x1[:, 0].cpu().numpy(), x1[:, 1].cpu().numpy(), color='red', alpha=0.5, s=1)
-        plt.scatter(Xt[..., 0].cpu().numpy(), Xt[..., 1].cpu().numpy(), color='red', alpha=0.5, s=1)
+        plt.plot(xt_fake[..., 0], xt_fake[..., 1], color='blue', alpha=0.5)
+        plt.scatter(x0[:, 0].cpu().numpy(), x0[:, 1].cpu().numpy(), color='red', alpha=0.2, s=6)
+        # plt.scatter(x1[:, 0].cpu().numpy(), x1[:, 1].cpu().numpy(), color='red', alpha=0.5, s=1)
+        plt.scatter(Xt[..., 0].cpu().numpy(), Xt[..., 1].cpu().numpy(), color='red', alpha=0.2, s=6)
         if epoch is not None:
             plt.title(f"Epoch {epoch}")
         plt.tight_layout()

@@ -24,7 +24,7 @@ class MLP(torch.nn.Module):
         self.net = torch.nn.Sequential(
             torch.nn.Linear(dim + (1 if time_varying else 0), w), torch.nn.SELU(),
             torch.nn.Linear(w, w), torch.nn.SELU(),
-            torch.nn.Linear(w, w), torch.nn.SELU(),
+            # torch.nn.Linear(w, w), torch.nn.SELU(),
             torch.nn.Linear(w, out_dim),
         )
 
@@ -32,10 +32,10 @@ class MLP(torch.nn.Module):
         return self.net(x)
 
 
-def generate_data(seed, distribution, size):
+def generate_data(seed, distribution, size, std=0.1):
     np.random.seed(seed)
     if distribution == 'knot':
-        X0, Xt, X1, times = loop_distribution(size, std=0.1)
+        X0, Xt, X1, times = loop_distribution(size, std=std)
     else:
         X0, Xt, X1 = generate_marginals(size)
         times = np.ones(size) * 0.5
@@ -50,24 +50,26 @@ def train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epo
     if ot:
         otplan = OTPlanSampler('exact')
         pi = otplan.get_map(X0, X1)
+        i, j = otplan.sample_map(pi, batch_size, replace=True)
+        x0_ot, x1_ot = X0[i], X1[j]
     else:
         otplan = None
 
     for step in trange(n_epochs, desc="Training CFM", leave=False):
         cfm_optimizer.zero_grad()
 
-        x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
-        x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
         if ot == 'ot':
-            i, j = otplan.sample_map(pi, batch_size, replace=True)
-            x0, x1 = X0[i], X1[j]
+            x0, x1 = x0_ot, x1_ot
         elif ot == 'mmot':
             xt = Xt[np.random.choice(np.arange(0, Xt.shape[0]), batch_size)]
             x0, x1 = mmot_couple_marginals(x0, x1, xt, otplan)
+        else:
+            x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
+            x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
 
         t = torch.rand(x0.shape[0], 1, device=device)
 
-        xt = interpolant(x0, x1, t).detach()
+        xt = interpolant(x0, x1, t, training=False).detach()
         ut = interpolant.dI_dt(x0, x1, t).detach()
 
         vt = cfm_model(torch.cat([xt, t], dim=-1))
@@ -81,7 +83,7 @@ def train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epo
 
 def main(distribution):
     seed = 0
-    size = 3000
+    size = 1200
     batch_size = 128
     train_ali = False
     ot_gan = "ot"
@@ -94,7 +96,7 @@ def main(distribution):
 
     torch.manual_seed(seed)
     g_hidden = 128
-    interpolant = CorrectionInterpolant(dims, g_hidden).to(device)
+    interpolant = CorrectionInterpolant(dims, g_hidden, t_smooth=0).to(device)
 
     d_hidden = 128
     discriminator = torch.nn.Sequential(
@@ -109,7 +111,7 @@ def main(distribution):
     if train_ali:
         interpolant = train_interpolants(interpolant, discriminator, data, train_timesteps=times,
                                          gan_optimizer_D=gan_optimizer_D, gan_optimizer_G=gan_optimizer_G,
-                                         n_epochs=100_001, seed=seed, batch_size=batch_size, correct_coeff=1.,
+                                         n_epochs=50_001, seed=seed, batch_size=batch_size, correct_coeff=1,
                                          device=device, distribution=distribution, ot=ot_gan, gan_loss=gan_loss)
         torch.save(interpolant.state_dict(), "interpolant_models_toy_data/" + ot_gan + "-" +
                distribution + str(seed) + '.pth')
@@ -124,9 +126,9 @@ def main(distribution):
             otplan, pi = None, None
         plot_knot(X0, Xt, X1, times, device, interpolant, None, pi, otplan)
 
-    cfm_model = MLP(dims, time_varying=True, w=64).to(device)
-    cfm_optimizer = torch.optim.Adam(cfm_model.parameters(), 1e-3)
-    cfm_model, losses = train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epochs=2_001,
+    cfm_model = MLP(dims, time_varying=True, w=32).to(device)
+    cfm_optimizer = torch.optim.Adam(cfm_model.parameters(), 1e-4)
+    cfm_model, losses = train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, 512, n_epochs=40_001,
                                       device=device, ot=ot_fm)
     plt.plot(np.array(losses)[1000:])
     plt.show()
@@ -134,7 +136,7 @@ def main(distribution):
     node = NeuralODE(torch_wrapper(cfm_model),
                      solver="dopri5", sensitivity="adjoint").to(device)
 
-    num_int_steps = 1000
+    num_int_steps = 100
     X0 = torch.tensor(data[0], dtype=torch.float32).to(device)
     with torch.no_grad():
         cfm_traj = node.trajectory(X0, t_span=torch.linspace(0, 1, num_int_steps + 1),
@@ -142,21 +144,40 @@ def main(distribution):
         cfm_traj = cfm_traj.cpu().numpy()
 
     if distribution == 'knot':
-        plt.figure(figsize=(5, 5))
+        fig, ax = plt.subplots(figsize=(5, 5))
         plt.rcParams.update({'font.size': 15})
-        plt.plot(cfm_traj[..., 0], cfm_traj[..., 1], color='blue', alpha=0.2)
-        plt.scatter(data[0][:, 0], data[0][:, 1], color='red', alpha=0.5, s=1)
-        xt = data[1].reshape(-1, 2)
-        labels = np.tile(np.arange(size - 2) % 10, 10)
+        plt.plot(cfm_traj[..., 0], cfm_traj[..., 1], color='blue', alpha=0.5)
+        plt.scatter(data[0][..., 0], data[0][..., 1], color='red', alpha=0.2, s=6)
+        plt.scatter(data[1][..., 0], data[1][..., 1], color='red', alpha=0.2, s=6)
 
-        plt.scatter(data[1][..., 0], data[1][..., 1], color='red', alpha=0.5, s=1)
-        # plt.scatter(xt[..., 0], xt[..., 1], c=labels, alpha=0.5, s=1, cmap='tab10')
-        # plt.scatter(data[2][:, 0], data[2][:, 1], color='red', alpha=0.5, s=1)
-        # plt.title(f"ALI-CFM Trajectories")
+        # Uncomment to plot rainbow colored data
+        # xt = data[1].reshape(-1, 2)
+        # labels = np.tile(np.arange(size - 2), 10)
+        # import matplotlib as mpl
+        # from mpl_toolkits.axes_grid1 import make_axes_locatable
+        # oscillations = 20  # number of times hsv cycles from 0→1
+        # c_scaled = (labels * oscillations / size) % 1.0  # wrap into [0,1]
+        #
+        # base = plt.get_cmap("hsv")
+        # colors = base(np.linspace(0, 1, 256))
+        # colors = np.tile(colors, (oscillations, 1))  # repeat
+        # cmap = mpl.colors.ListedColormap(colors)
+        # norm = mpl.colors.Normalize(vmin=0, vmax=oscillations)
+        #
+        # sc = plt.scatter(xt[..., 0], xt[..., 1], c=c_scaled, alpha=1., s=6, norm=norm, cmap=cmap)
+        # divider = make_axes_locatable(ax)
+        # cax = divider.append_axes("right", size="3%", pad=0.05)  # 3% width, small pad
+        # cbar = plt.colorbar(sc, cax=cax)
+        # cbar.set_ticks(np.linspace(0, oscillations, oscillations + 1),
+        #                labels=[0] + (oscillations - 1) * [None] + [1])
+        # cbar.set_label("$t$", labelpad=0.1)
+
         plt.xlim(-3.5, 3.5)
-        plt.tight_layout()
-        # plt.legend(loc='upper right')
+        plt.yticks([0.0, 0.5, 1.0, 1.5, 2.0])
+        plt.xticks([-2, 0, 2])
 
+        # plt.legend(loc='upper right')
+        plt.tight_layout()
         save_dir = f"{distribution}_ali_frames"
         filename = os.path.join(save_dir, f"ALI_CFM.png")
         plt.savefig(filename, dpi=150)

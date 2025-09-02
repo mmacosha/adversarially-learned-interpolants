@@ -70,6 +70,27 @@ class CorrectionInterpolant(nn.Module):
             t * (1 - t) * corr_jac.squeeze()
         )
 
+    def dxt_dt_autograd(self, x0, x1, t):
+        """
+        Used mainly for sanity checking dI_dt
+        """
+        t_req = t.clone().detach().requires_grad_(True)
+        xt = self.forward(x0, x1, t_req, training=False)  # (B, 2)
+
+        grads = []
+        for j in range(xt.shape[-1]):  # 2 dims
+            g = T.autograd.grad(
+                outputs=xt[:, j].sum(),  # scalar to get VJP
+                inputs=t_req,
+                retain_graph=True,
+                create_graph=False,
+                allow_unused=False
+            )[0]  # (B, 1)
+            grads.append(g)
+
+        dxt_dt = T.cat(grads, dim=1)  # (B, 2)
+        return dxt_dt
+
 
 class AffineTransformInterpolant(nn.Module):
     def __init__(self, dim: int = 2, h: int = 64, reference_trajectory='linear',

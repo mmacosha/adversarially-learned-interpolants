@@ -101,15 +101,48 @@ def train_ot_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epoc
         title = f"Cubic Splines Interpolants ($K=${times.shape[0]})"
     plt.figure(figsize=(5, 5))
     plt.rcParams.update({'font.size': 15})
-    plt.plot(xt[:, 0, 0], xt[:, 0, 1], color='blue', alpha=0.6)
-    # plt.title(title)
-    plt.scatter(data[0][:, 0], data[0][:, 1], color='red', alpha=0.5, s=1)
-    plt.scatter(data[1][..., 0], data[1][..., 1], color='red', label='real data', alpha=0.5, s=1)
-    plt.scatter(data[2][:, 0], data[2][:, 1], color='red', alpha=0.5, s=1)
+    plt.plot(xt[:, 0, 0], xt[:, 0, 1], color='blue', alpha=0.8)
+    plt.scatter(data[0][:, 0], data[0][:, 1], color='red', alpha=0.2, s=6)
+    plt.scatter(data[1][..., 0], data[1][..., 1], color='red', alpha=0.2, s=6)
     plt.xlim(-3.5, 3.5)
     plt.tight_layout()
     plt.show()
 
+    # import matplotlib as mpl
+    # from mpl_toolkits.axes_grid1 import make_axes_locatable
+    # fig, ax = plt.subplots(figsize=(6, 5))
+    #
+    # x0, y0 = data[1][:, 0, 0], data[1][:, 0, 1]
+    # x1, y1 = data[1][:, -1, 0], data[1][:, -1, 1]
+    #
+    # # Combine data and assign labels
+    # X = np.concatenate([np.column_stack([x0, y0]), np.column_stack([x1, y1])])
+    # labels = np.array([0] * len(x0) + [1] * len(x1))
+    #
+    # # Build a discrete 2-color colormap
+    # cmap = mpl.colors.ListedColormap(["red", "cyan"])
+    # norm = mpl.colors.BoundaryNorm(boundaries=[-0.5, 0.5, 1.5], ncolors=2)
+    #
+    # # Scatter with colormap + labels
+    # sc = ax.scatter(X[:, 0], X[:, 1], c=labels, cmap=cmap, norm=norm, s=6, alpha=1)
+    #
+    # plt.rcParams.update({'font.size': 15})
+    # # Add tight colorbar
+    # divider = make_axes_locatable(ax)
+    # cax = divider.append_axes("right", size="3%", pad=0.05)
+    # cbar = plt.colorbar(sc, cax=cax)
+    # cbar.set_ticks([0, 1])
+    # cbar.set_ticklabels([0, 1])  # or "red", "cyan" etc.
+    # cbar.set_label(r"$t$")
+    #
+    # # Axes settings
+    # ax.set_xlim(-3.5, 3.5)
+    # ax.set_ylim(-0.5, 2.5)
+    # ax.set_yticks([0.0, 0.5, 1.0, 1.5, 2.0], [0.0, 0.5, 1.0, 1.5, 2.0], fontsize=15)
+    # ax.set_xticks([-2, 0, 2], [-2, 0, 2], fontsize=15)
+    #
+    # plt.tight_layout()
+    # plt.show()
 
 
     for step in trange(n_epochs, desc="Training CFM", leave=False):
@@ -119,7 +152,7 @@ def train_ot_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epoc
 
         if interpolant == 'linear':
             idx = torch.bucketize(t.squeeze(-1), times) - 1
-            idx = idx.clamp(0, X.shape[1] - 2)
+            idx = idx.clamp(0, X.shape[0] - 2)
 
             x_k = X[idx]
             x_kp1 = X[idx + 1]  # (K, n, d)
@@ -150,18 +183,18 @@ def train_ot_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epoc
 
 def main(distribution):
     seed = 0
-    size = 3000
-    batch_size = 128
+    size = 60
+    batch_size = 512
     ot_fm = "ot"
     interpolant = 'cubic'
 
-    data, times = generate_data(seed, distribution, size)
+    data, times = generate_data(seed, distribution, size, std=0.1)
     dims = data[0].shape[-1]
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     torch.manual_seed(seed)
 
-    cfm_model = MLP(dims, time_varying=True, w=64).to(device)
+    cfm_model = MLP(dims, time_varying=True, w=32).to(device)
     cfm_optimizer = torch.optim.Adam(cfm_model.parameters(), 1e-3)
     cfm_model, losses = train_ot_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epochs=40_001,
                                      device=device, ot=ot_fm, times=times)
@@ -171,7 +204,7 @@ def main(distribution):
     node = NeuralODE(torch_wrapper(cfm_model),
                      solver="dopri5", sensitivity="adjoint").to(device)
 
-    num_int_steps = 1000
+    num_int_steps = 100
     X0 = torch.tensor(data[0], dtype=torch.float32).to(device)
     with torch.no_grad():
         cfm_traj = node.trajectory(X0, t_span=torch.linspace(0, 1, num_int_steps + 1),
@@ -180,9 +213,9 @@ def main(distribution):
 
     plt.figure(figsize=(5, 5))
     plt.rcParams.update({'font.size': 15})
-    plt.plot(cfm_traj[..., 0], cfm_traj[..., 1], color='blue', alpha=0.2)
-    # plt.scatter(data[0][:, 0], data[0][:, 1], color='red', alpha=0.5, s=1)
-    plt.scatter(data[1][..., 0], data[1][..., 1], color='red', alpha=0.5, s=1)
+    plt.plot(cfm_traj[..., 0], cfm_traj[..., 1], color='blue', alpha=0.6)
+    plt.scatter(data[0][:, 0], data[0][:, 1], color='red', alpha=0.2, s=6)
+    plt.scatter(data[1][..., 0], data[1][..., 1], color='red', alpha=0.2, s=6)
     # plt.scatter(data[2][:, 0], data[2][:, 1], color='red', alpha=0.5, s=1)
     titles = {"linear": "OT-CFM Trajectories", "cubic": "OT-MMFM Trajectories"}
     # plt.title(titles[interpolant])
