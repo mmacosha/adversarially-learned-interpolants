@@ -9,7 +9,8 @@ from typing import List
 from sklearn.preprocessing import StandardScaler
 
 
-DATA_PATH = Path("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/data")
+# DATA_PATH = Path("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/data")
+DATA_PATH = Path("./data/single_cell")
 
 
 class Dataset:

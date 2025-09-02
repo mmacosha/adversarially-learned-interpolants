@@ -1,226 +1,247 @@
+import random
 import numpy as np
 import torch
-from tqdm.auto import trange
 from torch import nn
-import matplotlib.pyplot as plt
+
 import os
-import imageio
-import glob
-from torchcfm.optimal_transport import OTPlanSampler
-from ST.utils import mmot_couple_marginals
+import wandb
+
+import click
+import hydra
+from hydra import compose, initialize
+
+import warnings
+from tqdm.auto import trange, tqdm
+
+from omegaconf import OmegaConf, DictConfig
+
+from torchdyn.core import NeuralODE
+from torchcfm.utils import torch_wrapper
+from torchcfm.conditional_flow_matching import OTPlanSampler
+
+from ali_cfm.data_utils import get_dataset, denormalize
+from ali_cfm.loggin_and_metrics import finish_results_table, compute_emd
+from ali_cfm.nets import TrainableInterpolant, Discriminator, MLP
+from ali_cfm.training import (
+    pretain_interpolant, train_ot_cfm, 
+    train_interpolant_with_gan, integrate_interpolant,
+    init_cfm_from_checkpoint, init_interpolant_from_checkpoint,
+)
 
 
-def create_gif(save_dir='frames', output_file='distribution.gif', fps=5):
-    frame_paths = sorted(glob.glob(os.path.join(save_dir, 'frame_*.png')))
-    frames = [imageio.v2.imread(path) for path in frame_paths]
-    imageio.mimsave(output_file, frames, fps=fps)
+def fix_seed(seed: int = 42):
+    random.seed(seed)               
+    np.random.seed(seed)            
+    torch.manual_seed(seed)         
+    torch.cuda.manual_seed(seed)    
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
-def sample_gan_batch(X, batch_size, times):
-    # X shape (n, len(times), dims)
-    idx = np.random.randint(0, X.shape[0])
-    t_idx = np.random.choice(np.arange(0, times[1:-1].shape[0]), batch_size)
-    return times[t_idx], X[idx, t_idx]
+def train_ali(cfg):
+    seed_list = cfg.seed_list
+    ot_sampler = OTPlanSampler('exact', reg=0.1)
 
+    data, min_max = get_dataset(
+        name=cfg.dataset, 
+        n_data_dims=cfg.dim, 
+        normalize=cfg.normalise, 
+        whiten=cfg.whiten
+    )
+    # This code assumes that timesteps are in [0, ..., T_max]
+    timesteps_list = [t for t in range(len(data))]
+    
+    int_results, cfm_results = {}, {}
 
+    run = wandb.init(
+        name=f"{cfg.gan_loss}-{cfg.wandb_name}-{cfg.dataset}-{cfg.dim}D",
+        mode=cfg.wandb_mode,
+        project=f"ali-cfm-{cfg.dataset}-{cfg.dim}D",
+        config=OmegaConf.to_object(cfg)
+    )
 
-def train(interpolant, discriminator, data,
-    gan_optimizer_G, gan_optimizer_D, n_epochs,
-    batch_size, correct_coeff, train_timesteps, seed, distribution, plot_frequency=10_000,
-          device='cpu', ot=False, gan_loss='vanilla'):
+    os.makedirs(f"{run.dir}/checkpoints", exist_ok=True)
 
-    torch.manual_seed(seed)
+    for seed in tqdm(seed_list, desc="Seeds"):
+        fix_seed(seed)
+        int_results[f"seed={seed}"] = []
+        cfm_results[f"seed={seed}"] = []
 
-    X0, Xt, X1 = (torch.tensor(X, dtype=torch.float32).to(device) for X in data)
-    train_timesteps_np = train_timesteps.copy()
-    train_timesteps = torch.tensor(train_timesteps, dtype=torch.float32).to(device).view(-1, 1)
+        for removed_t in tqdm(timesteps_list[1: -1], desc="Timesteps", leave=False):
+            curr_timesteps = [x for x in timesteps_list if x != removed_t]
+            metric_prefix = f"t={removed_t}_{seed=}"
 
-    if ot == 'ot':
-        otplan = OTPlanSampler('exact')
-        pi = otplan.get_map(X0, X1)
-    elif ot == 'mmot':
-        otplan = OTPlanSampler('exact')
-        pi1 = otplan.get_map(X0, Xt)
-        pi2 = otplan.get_map(Xt, X1)
-        pi = [pi1, pi2]
-    else:
-        pi, otplan = None, None
+            # Configure neural networks
+            interpolant = TrainableInterpolant(
+                dim=cfg.dim,
+                h_dim=cfg.interpolant_dim,
+                t_smooth=cfg.t_smooth,
+            ).to(cfg.device)
+            pretrain_optimizer_G = torch.optim.Adam(
+                interpolant.parameters(), 
+                lr=cfg.pretrain_lr,
+            )
 
+            discriminator = Discriminator(
+                in_dim=cfg.dim + 1, 
+                w=cfg.disc_dim, 
+                apply_sigmoid=False,
+            ).to(cfg.device)
+            gan_optimizer_G = torch.optim.Adam(
+                interpolant.parameters(), 
+                lr=cfg.interpolant_gen_lr
+            )
+            gan_optimizer_D = torch.optim.Adam(
+                discriminator.parameters(), 
+                lr=cfg.interpolant_disc_lr
+            )
 
-    curr_epoch = 0
-    for epoch in trange(curr_epoch, n_epochs,
-                        desc="Training GAN Interpolant", leave=False):
-        if epoch > 40_000:
-            gan_optimizer_G.param_groups[0]['lr'] = 1e-5
-            gan_optimizer_D.param_groups[0]['lr'] = 5e-5
-        elif epoch > 100_000:
-            gan_optimizer_G.param_groups[0]['lr'] = 1e-6
-            gan_optimizer_D.param_groups[0]['lr'] = 5e-6
+            ot_cfm_model = MLP(
+                dim=cfg.dim, 
+                time_varying=True, 
+                w=cfg.cfm_dim,
+            ).to(cfg.device)
+            ot_cfm_optimizer = torch.optim.Adam(
+                ot_cfm_model.parameters(), 
+                lr=cfg.cfm_lr,
+            )
 
-        curr_epoch += 1
+            # Train interpolant model
+            if cfg.train_interpolants:
+                # Pretrain interpolant
+                pretain_metric_prefix = f"{metric_prefix}_pretrain"
+                wandb.define_metric(f"{pretain_metric_prefix}/*",
+                                    step_metric=f"{pretain_metric_prefix}_step")
+                pretain_interpolant(
+                    interpolant, pretrain_optimizer_G, ot_sampler, data,
+                    cfg.num_ali_pretrain_steps, cfg.batch_size, curr_timesteps,
+                    ot=cfg.pretain_ot, 
+                    metric_prefix=pretain_metric_prefix,
+                    device=cfg.device
+                )
 
-        t, xt = sample_gan_batch(Xt, batch_size, train_timesteps)
-        if ot == 'ot':
-            i, j = otplan.sample_map(pi, batch_size, replace=True)
-            x0, x1 = X0[i], X1[j]
-        elif ot == 'mmot':
-            x0, x1 = mmot_couple_marginals(x0, x1, xt, otplan)
-        else:
-            x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), batch_size)]
-            x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), batch_size)]
+                # Train interpolant with GAN
+                interpolant_metric_prefix = f"{metric_prefix}_interpolant"
+                wandb.define_metric(f"{interpolant_metric_prefix}/*",
+                                    step_metric=f"{interpolant_metric_prefix}_step")
 
-        xt_fake = interpolant(x0, x1, t)
-
-        real_inputs = torch.cat([xt, t], dim=-1)
-        fake_inputs = torch.cat([xt_fake.detach(), t], dim=-1)
-
-        real_proba = discriminator(real_inputs)
-        fake_proba = discriminator(fake_inputs)
-
-        # Train discriminator
-        gan_optimizer_D.zero_grad()
-        if gan_loss == "RpGAN":
-            # Using the relativistic pairing GAN loss
-            d_loss = torch.nn.functional.softplus((fake_proba - real_proba)).mean()
-
-            d_loss.backward()
-            gan_optimizer_D.step()
-
-            # Train generator
-            gan_optimizer_G.zero_grad()
-            real_inputs = torch.cat([xt, t], dim=-1)
-            fake_inputs = torch.cat([xt_fake, t], dim=-1)
-
-            real_proba = discriminator(real_inputs)
-            fake_proba = discriminator(fake_inputs)
-            g_loss_ = torch.nn.functional.softplus((real_proba - fake_proba)).mean()
-        else:
-            d_real_loss = nn.functional.softplus(-real_proba).mean()
-            d_fake_loss = nn.functional.softplus(fake_proba).mean()
-            d_loss = d_real_loss + d_fake_loss
-
-            d_loss.backward()
-            gan_optimizer_D.step()
-
-            # Train generator
-            gan_optimizer_G.zero_grad()
-            fake_inputs = torch.cat([xt_fake, t], dim=-1)
-            fake_proba = discriminator(fake_inputs)
-
-            g_loss_ = nn.functional.softplus(-fake_proba).mean()
-        reg_weight_loss = interpolant.regularizing_term(x0, x1, t, xt_fake)
-        g_loss = g_loss_ + correct_coeff * reg_weight_loss
-
-        g_loss.backward()
-        gan_optimizer_G.step()
-
-        if epoch % plot_frequency == 0:
-            if distribution == 'knot':
-                plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch, pi, otplan)
+                train_interpolant_with_gan(
+                    interpolant, discriminator, ot_sampler,
+                    data,
+                    gan_optimizer_G, gan_optimizer_D,
+                    cfg.num_ali_train_steps, cfg.batch_size, cfg.correct_coeff,
+                    curr_timesteps, seed, min_max, 
+                    ot=cfg.interpolant_ot,
+                    metric_prefix=interpolant_metric_prefix,
+                    device=cfg.device, 
+                    gan_loss=cfg.gan_loss
+                )
             else:
-                plot_trimodal(X0, Xt, X1, device, interpolant, epoch, pi, otplan, ot)
+                init_interpolant_from_checkpoint()
+            
+            # Compute metrics for GAN interpolant
+            x0 = data[0].to(cfg.device)
+            x1 = data[-1].to(cfg.device)
+            x0, x1 = ot_sampler.sample_plan(x0, x1)
 
-    return interpolant
+            int_traj = integrate_interpolant(
+                x0, x1, cfg.num_int_steps_per_timestep, interpolant,
+            )
+
+            int_emd = compute_emd(
+                denormalize(data[removed_t], min_max), 
+                denormalize(int_traj[100 * removed_t], min_max)
+            )
+            int_results[f"seed={seed}"].append(int_emd.item())
+
+            # Train CFM model using GAN interpolant
+            if cfg.train_cfm:
+                cfm_metric_prefix = f"{metric_prefix}_cfm"
+                wandb.define_metric(f"{cfm_metric_prefix}/*",
+                                    step_metric=f"{cfm_metric_prefix}_step")
+                train_ot_cfm(
+                    ot_cfm_model, ot_cfm_optimizer, interpolant, ot_sampler,
+                    data, cfg.batch_size, min_max, cfg.num_cfm_train_steps,
+                    metric_prefix=cfm_metric_prefix, 
+                    ot=cfg.cfm_ot,
+                    device=cfg.device, 
+                    times=curr_timesteps
+                )
+            else:
+                init_cfm_from_checkpoint()
+
+            # Compute metrics for OT-CFM
+            node = NeuralODE(
+                vector_field=torch_wrapper(ot_cfm_model),
+                solver="dopri5", 
+                sensitivity="adjoint"
+            )
+
+            with torch.no_grad():
+                ot_cfm_traj = []
+                _batch_size = cfg.trajectory_simulation_batch_size
+                for i in trange(
+                        (len(data[removed_t - 1]) + _batch_size - 1) // _batch_size,
+                        leave=False,
+                        desc='Collecting CFM trajectories.'
+                    ):
+                    data_ = data[removed_t - 1][i * _batch_size: (i + 1) * _batch_size]
+                    batched_traj = node.trajectory(
+                        data_.to(cfg.device),
+                        t_span=torch.linspace(
+                            start=(removed_t - 1) / max(timesteps_list), 
+                            end=removed_t / max(timesteps_list), 
+                            steps=cfg.num_int_steps_per_timestep
+                        ),
+                    )
+                    ot_cfm_traj.append(batched_traj)
+                ot_cfm_traj = torch.cat(ot_cfm_traj, dim=1).float()
+
+            cfm_emd = compute_emd(
+                denormalize(data[removed_t], min_max).to(cfg.device), 
+                denormalize(ot_cfm_traj[-1], min_max).to(cfg.device),
+            )
+            cfm_results[f"seed={seed}"].append(cfm_emd.item())
+
+            wandb.log({
+                f"{metric_prefix}_cfm/cfm_result": cfm_emd.item()
+            })
+
+            # Save artifacts for given seed and t
+            checkpoint = {
+               "interpolant": interpolant.state_dict(),
+               "discriminator": discriminator.state_dict(),
+               "ot_cfm_model": ot_cfm_model.state_dict(),
+            }
+            save_path = os.path.join(
+               run.dir, "checkpoints", f"{metric_prefix}_ali_cfm.pth"
+            )
+            torch.save(checkpoint, save_path)
+
+    int_results = finish_results_table(int_results, timesteps_list[1: -1])
+    cfm_results = finish_results_table(cfm_results, timesteps_list[1: -1])
+    int_results.to_csv(exp_path / 'int_results.csv', index=False)  
+    cfm_results.to_csv(exp_path / 'cfm_results.csv', index=False)  
+
+    wandb.log({"interpolant_results": wandb.Table(int_results)})
+    wandb.log({"cfm_results": wandb.Table(cfm_results)})
+    wandb.finish()
 
 
-def plot_trimodal(X0, Xt, X1, device, interpolant, epoch, pi, otplan, ot):
-    plt_bs = 64
-    with torch.no_grad():
-        x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), plt_bs)]
-        xt = Xt[np.random.choice(np.arange(0, Xt.shape[0]), plt_bs)]
-        x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), plt_bs)]
-        if ot == 'ot':
-            i, j = otplan.sample_map(pi, plt_bs, replace=True)
-            x0, x1 = X0[i], X1[j]
-        elif ot == 'mmot':
-            x0, x1 = mmot_couple_marginals(x0, x1, xt, otplan)
+@click.command()
+@click.option("--config", type=click.Path(exists=True), help="Path to the config file.")
+@click.argument("overrides", nargs=-1)
+def main(config, overrides):
+    base_cfg = OmegaConf.load(config)
+    overrides_cfg = OmegaConf.from_dotlist(list(overrides))
+    cfg = OmegaConf.merge(base_cfg, overrides_cfg)
+
+    os.environ["HYDRA_FULL_ERROR"] = '1'
+    warnings.filterwarnings("ignore")
+    train_ali(cfg)
 
 
-        t = torch.linspace(0, 1, 100)
-        t = torch.tensor(np.tile(t.reshape((-1, 1)), plt_bs), dtype=torch.float32,
-                         device=device).unsqueeze(-1)
-        x0_expanded = x0.unsqueeze(0).expand(t.shape[0], -1, -1)
-        x1_expanded = x1.unsqueeze(0).expand(t.shape[0], -1, -1)
-
-        xt_fake = interpolant(x0_expanded, x1_expanded, t, training=False).cpu().numpy()
-
-        t_marginal_times = [0.0, 0.5, 1.0]
-        marginal_data = [X0, Xt, X1]
-        marginal_colors = ['red', 'green', 'blue']
-        marginal_labels = ['t=0', 't=0.5', 't=1']
-
-        fig, ax1 = plt.subplots(1, 1, figsize=(14, 8))
-
-        ax1.plot(torch.linspace(0, 1, 100), xt_fake.squeeze(-1), 'b-', alpha=0.4, linewidth=1.5)
-
-        for t_val, data, color, label in zip(t_marginal_times, marginal_data, marginal_colors, marginal_labels):
-            # Create histogram
-            hist, bin_edges = np.histogram(data.cpu().numpy(), bins=25, density=True)
-            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-
-            # Scale and offset histogram to show as vertical distribution
-            hist_scaled = hist * 0.02  # Scale factor for visibility
-
-            # Plot as filled area
-            for j in range(len(bin_centers)):
-                ax1.fill_betweenx([bin_centers[j] - (bin_edges[1] - bin_edges[0]) / 2,
-                                   bin_centers[j] + (bin_edges[1] - bin_edges[0]) / 2],
-                                  t_val, t_val + hist_scaled[j],
-                                  alpha=0.7, color=color)
-
-            # Add vertical line at time point
-            ax1.axvline(t_val, color=color, linestyle='--', alpha=0.8, linewidth=2, label=label)
-
-        ax1.set_xlabel('time t', fontsize=12)
-        ax1.set_ylabel('position x', fontsize=12)
-        ax1.set_title(f'Epoch {epoch} ALIs with marginal distributions', fontsize=14)
-        ax1.grid(True, alpha=0.3)
-        ax1.legend(fontsize=10)
-        ax1.set_xlim(-0.05, 1.05)
-
-        plt.tight_layout()
-        plt.savefig(f"trimodal_ali_plots/epoch{epoch}.png", dpi=300, bbox_inches='tight')
-        plt.close()
-
-
-def plot_knot(X0, Xt, X1, train_timesteps_np, device, interpolant, epoch, pi, otplan):
-    plt_bs = 10
-    with torch.no_grad():
-        # x0 = X0[np.random.choice(np.arange(0, X0.shape[0]), plt_bs)]
-        # x1 = X1[np.random.choice(np.arange(0, X1.shape[0]), plt_bs)]
-        if pi is not None:
-            i, j = otplan.sample_map(pi, plt_bs, replace=True)
-            x0 = X0[i]
-            x1 = X1[j]
-        t = torch.tensor(np.tile(train_timesteps_np.reshape((-1, 1)), plt_bs), dtype=torch.float32,
-                         device=device)
-        t0 = torch.zeros((1, plt_bs), device=device)
-        t1 = torch.ones((1, plt_bs), device=device)
-        t = torch.cat((torch.cat((t0, t), dim=0), t1), dim=0).unsqueeze(-1)
-
-        x0_expanded = x0.unsqueeze(0).expand(t.shape[0], -1, -1)
-        x1_expanded = x1.unsqueeze(0).expand(t.shape[0], -1, -1)
-
-        xt_fake = interpolant(x0_expanded, x1_expanded, t, training=False).cpu().numpy()
-
-        plt.figure(figsize=(5, 5))
-        plt.rcParams.update({'font.size': 15})
-        plt.plot(xt_fake[..., 0], xt_fake[..., 1], color='blue', alpha=0.5)
-        plt.scatter(x0[:, 0].cpu().numpy(), x0[:, 1].cpu().numpy(), color='red', alpha=0.2, s=6)
-        # plt.scatter(x1[:, 0].cpu().numpy(), x1[:, 1].cpu().numpy(), color='red', alpha=0.5, s=1)
-        plt.scatter(Xt[..., 0].cpu().numpy(), Xt[..., 1].cpu().numpy(), color='red', alpha=0.2, s=6)
-        if epoch is not None:
-            plt.title(f"Epoch {epoch}")
-        plt.tight_layout()
-        # plt.legend(loc='upper right')
-
-        save_dir = "knot_ali_frames"
-        if epoch is not None:
-            filename = os.path.join(save_dir, f"frame_{epoch:06d}.png")
-        else:
-            filename = os.path.join(save_dir, f"frame_final.png")
-        plt.savefig(filename, dpi=150)
-        plt.close()
-
-if __name__ == '__main__':
-    create_gif("knot_ali_frames", "knot.gif")
+if __name__ == "__main__":
+    main()

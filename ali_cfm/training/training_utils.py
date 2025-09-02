@@ -11,16 +11,7 @@ from pathlib import Path
 from tqdm import trange
 
 
-def fix_seed(seed: int = 42):
-    random.seed(seed)               
-    np.random.seed(seed)            
-    torch.manual_seed(seed)         
-    torch.cuda.manual_seed(seed)    
-    torch.cuda.manual_seed_all(seed)
-
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
+### Prepare batches for taining ###
 
 def get_batch(FM, X, batch_size, timesteps, return_noise=False, device='cpu'):
     """Construct a batch with point sfrom each timepoint pair"""
@@ -86,35 +77,6 @@ def sample_x0_x1(X, batch_size, device='cpu'):
     x1 = X[-1][np.random.randint(X[-1].shape[0], size=batch_size)].to(device)
     return x0, x1
 
-    
-def init_weights(m):
-    if isinstance(m, torch.nn.Linear):
-        torch.nn.init.xavier_normal_(m.weight, gain=3.6)
-        m.bias.data.fill_(0.00)
-
-
-def compute_window_avg(array, window_size):
-    return np.convolve(array, np.ones(window_size), mode='valid') / window_size
-
-
-@torch.no_grad()
-def compute_emd(p1, p2, device='cpu'):
-    a_weights = torch.ones((p1.shape[0],), device=device) / p1.shape[0]
-    b_weights = torch.ones((p2.shape[0],), device=device) / p2.shape[0]
-
-    M = pot.dist(p1, p2).sqrt()
-    return pot.emd2(a_weights, b_weights, M, numItermax=1e7)
-
-
-def sample_x_batch(X, batch_size):
-    return X[np.random.randint(0, X.shape[0], size=batch_size)]
-
-
-def sample_deterministic_ot_plan(x0, x1, ot_sampler):
-    pi = ot_sampler.get_map(x0, x1)
-    pi = pi / pi.sum()
-    return x0, x1[pi.argmax(axis=1)]
-
 
 def sample_gan_batch(X, batch_size, ot_sampler, divisor,
                      time=None, ot='none', times=(0, 1, 2, 3)):
@@ -139,38 +101,23 @@ def sample_gan_batch(X, batch_size, ot_sampler, divisor,
     return x0, x1, xt, t
 
 
-def integrate_interpolant(x0, x1, n_steps, interpolant):
-    device = x0.device
-    dt = 1 / n_steps
-    t = torch.zeros(x0.shape[0], 1, device=device)
-
-    integrated_trajectories = [x0.detach().cpu()]
-    for _ in trange(n_steps, leave=False):
-        xtm1 = integrated_trajectories[-1].to(device)
-        xtm1 = xtm1 + interpolant.dI_dt(x0, x1, t) * dt
-        integrated_trajectories.append(xtm1.cpu().detach())
-        t += dt
-
-    return torch.stack(integrated_trajectories)
+def sample_x_batch(X, batch_size):
+    return X[np.random.randint(0, X.shape[0], size=batch_size)]
 
 
-def remove(arr, val):
-    return [x for x in arr if x != val]
+def init_weights(m):
+    if isinstance(m, torch.nn.Linear):
+        torch.nn.init.xavier_normal_(m.weight, gain=3.6)
+        m.bias.data.fill_(0.00)
 
 
-def finish_results_table(table, timesteps):
-    table = pd.DataFrame(table)
-    table["mean"] = table.mean(axis=1)
-    table["std"] = table.std(axis=1)
-    table['timesteps'] = [f"{t=}" for t in timesteps]
-    table = table.round(4)
-    return table
+### Sample OT Plans ###
 
-def get_run_dir(run_id: str, search_dir: str | Path = './wandb'):
-    found_dirs = [*Path(search_dir).glob(f"*{run_id}*")]
-    if not found_dirs:
-        raise FileNotFoundError(f"No directories found for run_id: {run_id}")
-    return found_dirs[0] / 'files'
+def sample_deterministic_ot_plan(x0, x1, ot_sampler):
+    pi = ot_sampler.get_map(x0, x1)
+    pi = pi / pi.sum()
+    return x0, x1[pi.argmax(axis=1)]
+
 
 def mmot_couple_marginals(X0, X1, Xt, otplan):
     """
@@ -216,3 +163,33 @@ def mmot_couple_marginals(X0, X1, Xt, otplan):
 
     # 6) return the coupled points
     return X0[idx_0], X1[idx_1]
+
+
+### Others ###
+
+def integrate_interpolant(x0, x1, n_steps, interpolant):
+    device = x0.device
+    dt = 1 / n_steps
+    t = torch.zeros(x0.shape[0], 1, device=device)
+
+    integrated_trajectories = [x0.detach().cpu()]
+    for _ in trange(n_steps, leave=False):
+        xtm1 = integrated_trajectories[-1].to(device)
+        xtm1 = xtm1 + interpolant.dI_dt(x0, x1, t) * dt
+        integrated_trajectories.append(xtm1.cpu().detach())
+        t += dt
+
+    return torch.stack(integrated_trajectories)
+
+
+def init_cfm_from_checkpoint(*args, **kwargs):
+    raise NotImplementedError(
+        "CFM checkpoint loading not implemented yet."
+    )
+
+
+def init_interpolant_from_checkpoint(*args, **kwargs):
+    raise NotImplementedError(
+        "Interpolant checkpoint loading not implemented yet."
+    )
+

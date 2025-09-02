@@ -1,0 +1,48 @@
+wandb_name: ali_cfm
+wandb_mode: online
+saved_run_dir: none
+seed_list: [42, 43, 44, 45, 46]
+device: mps
+
+# dataset params
+dataset: multi
+dim: 50
+whiten: false
+normalise: true
+
+# networks' params
+t_smooth: 0.01
+cfm_dim: 1024
+interpolant_dim: 1024
+disc_dim: 1024
+
+# ot params
+pretain_ot: full
+interpolant_ot: mmot
+cfm_ot: mmot
+
+# training params
+batch_size: 128
+correct_coeff: 1.
+
+num_ali_pretrain_steps: 2001
+pretrain_lr: 1e-3
+
+gan_loss: RpGAN
+interpolant_gen_lr: 5e-5
+interpolant_disc_lr: 5e-5
+num_ali_train_steps: 70001
+
+cfm_lr: 1e-3
+num_cfm_train_steps: 2001
+
+use_pca: false
+train_cfm: true
+train_interpolants: true
+num_int_steps_per_timestep: 100
+trajectory_simulation_batch_size: 2048
+
+# hudra params
+hydra:
+  run:
+    dir: .

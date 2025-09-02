@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interpolnet"
+version = "0.1.0"
+description = "A package for neural network interpolation"
+readme = "README.md"
+authors = [
+    {name = "Kirill Tamogashev", email = "K.Tamogashev@sms.ed.ac.uk"},
+    {name = "Oskar Kviman", email = "okviman@kth.se"},
+    {name = "Nicola Branchini", email = "N.Branchini@sms.ed.ac.uk"}
+]
+
+requires-python = ">=3.7"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "torch==2.7.1",
+    "POT",
+    "scipy",
+    "scanpy",
+    "pandas",
+    "scikit-learn",
+    "torchcfm",
+    "wandb",
+    "hydra-core",
+]
+
+[tool.setuptools]
+packages = ["ali_cfm"]
