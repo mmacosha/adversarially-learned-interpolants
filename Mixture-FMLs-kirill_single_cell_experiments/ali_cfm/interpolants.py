@@ -46,12 +46,14 @@ class TrainableInterpolant(nn.Module):
             nn.Linear(h_dim, dim)
         )
 
-    def forward(self, x0, x1, t):
+    def forward(self, x0, x1, t, training=True):
         t = t[..., None] if t.ndim == 1 else t
 
         xt = self.linear_interpolant(x0, x1, t)
-
-        t_input = t + torch.randn_like(t) * self.t_smooth if self.t_smooth > 0 else t
+        if training:
+            t_input = t + torch.randn_like(t) * self.t_smooth if self.t_smooth > 0 else t
+        else:
+            t_input = t
         input_ = torch.cat([x0, x1, t_input], dim=-1) 
         
         correction = self.interpolant_net(input_)

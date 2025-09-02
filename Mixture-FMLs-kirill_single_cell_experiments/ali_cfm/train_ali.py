@@ -204,7 +204,7 @@ def train_ot_cfm(ot_cfm_model, ot_cfm_optimizer, interpolant,
         
         t = torch.rand(x0.shape[0], 1, device=device)
         
-        xt = interpolant(x0, x1, t).detach()
+        xt = interpolant(x0, x1, t, training=False).detach()
         ut = interpolant.dI_dt(x0, x1, t).detach()
 
         ut = denormalize_gradfield(ut, min_max).float()
@@ -381,22 +381,27 @@ def train_ali(cfg):
 from hydra import compose, initialize
 
 if __name__ == "__main__":
-    with initialize(config_path="./configs"):
-        cfg = compose(config_name="ali_local.yaml")
-        train_ali(cfg)
+    # with initialize(config_path="./configs"):
+    #     cfg = compose(config_name="ali_local.yaml")
+    #     train_ali(cfg)
 
-    # for dataset in ["multi", "cite"]:
-    #     for dim in [5, 50, 100]:
-    #         if dim > 5:
-    #             whiten = False
-    #             net_hidden = 1024
-    #         else:
-    #             whiten = True
-    #             net_hidden = 64
-    #         with initialize(config_path="./configs"):
-    #             cfg = compose(config_name="ali_local.yaml")
-    #             cfg.dataset = dataset
-    #             cfg.dim = dim
-    #             cfg.whiten = whiten
-    #             cfg.net_hidden = net_hidden
-    #             train_ali(cfg)  # call directly with config
+    for dim in [50, 100]:
+        for dataset in ["multi", "cite"]:
+            if dim > 5:
+                whiten = False
+                net_hidden = 1024
+                lr_G = 1e-4
+                if dataset == "eb":
+                    continue
+            else:
+                whiten = True
+                net_hidden = 64
+                lr_G = 1e-3
+            with initialize(config_path="./configs"):
+                cfg = compose(config_name="ali_local.yaml")
+                cfg.dataset = dataset
+                cfg.dim = dim
+                cfg.lr_G = lr_G
+                cfg.whiten = whiten
+                cfg.net_hidden = net_hidden
+                train_ali(cfg)  # call directly with config
