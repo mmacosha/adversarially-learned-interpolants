@@ -164,8 +164,10 @@ def train_ali(cfg):
                 wandb.define_metric(f"{cfm_metric_prefix}/*",
                                     step_metric=f"{cfm_metric_prefix}_step")
                 train_ot_cfm(
-                    ot_cfm_model, ot_cfm_optimizer, interpolant, ot_sampler,
-                    data, cfg.batch_size, min_max, cfg.num_cfm_train_steps,
+                    ot_cfm_model, ot_cfm_optimizer, 
+                    interpolant, ot_sampler,
+                    data, 
+                    cfg.batch_size, min_max, cfg.num_cfm_train_steps,
                     metric_prefix=cfm_metric_prefix, 
                     ot=cfg.cfm_ot,
                     device=cfg.device, 
