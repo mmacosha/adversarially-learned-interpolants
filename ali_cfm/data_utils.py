@@ -118,9 +118,20 @@ def get_dataset(
             data[adata.obs["sample_labels"].cat.codes == t] for t in range(n_times)
         ]
 
+
     elif name == 'cell_tracking':
-        boolean_masks = np.load("/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy")
-        X = [np.argwhere(boolean_masks[i]) for i in range(boolean_masks.shape[0])]
+
+        boolean_masks = np.load(
+            "/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy")
+
+        X = []
+
+        for i in range(boolean_masks.shape[0]):
+            coords = np.argwhere(boolean_masks[i])  # (y, x)
+
+            coords = coords[:, [1, 0]]  # swap -> (x, y)
+
+            X.append(coords)
 
     else:
         raise ValueError(f"Unknown dataset {name}")

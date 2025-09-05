@@ -2,9 +2,6 @@ import wandb
 import torch
 from tqdm.auto import trange
 
-from matplotlib import pyplot as plt
-from sklearn.decomposition import PCA
-
 from ali_cfm.loggin_and_metrics import compute_emd
 from ali_cfm.data_utils import denormalize
 
@@ -47,8 +44,8 @@ def train_interpolant_with_gan(
     interpolant, discriminator, ot_sampler, data,
     gan_optimizer_G, gan_optimizer_D, n_epochs,
     gan_batch_size, correct_coeff, train_timesteps, seed, min_max,
-    ot='none', plot_freaquency=5000, metric_prefix="", 
-    device='cpu', gan_loss='vanilla'
+    ot='none', plot_freaquency=5000, metric_prefix="", compute_emd_flag=True,
+    device='cpu', gan_loss='vanilla', plot_fn=utils.sc_plot_fn,
 ):
     t_max = max(train_timesteps)
     curr_epoch = 0
@@ -62,7 +59,7 @@ def train_interpolant_with_gan(
         #     gan_optimizer_D.param_groups[0]['lr'] = 5e-6
         
         curr_epoch += 1
-        if epoch % 5_000 == 0:
+        if (epoch % 5_000 == 0) and compute_emd_flag:
             with torch.no_grad():
                 for time in range(1, 4):
                     test_batch = utils.sample_gan_batch(
@@ -137,8 +134,8 @@ def train_interpolant_with_gan(
             fake_proba = discriminator(fake_inputs)
             g_loss_ = torch.nn.functional.softplus((real_proba - fake_proba)).mean()
         else:
-            d_real_loss = nn.functional.softplus(-real_proba).mean()
-            d_fake_loss = nn.functional.softplus(fake_proba).mean()
+            d_real_loss = torch.nn.functional.softplus(-real_proba).mean()
+            d_fake_loss = torch.nn.functional.softplus(fake_proba).mean()
             d_loss = d_real_loss + d_fake_loss
 
             d_loss.backward()
@@ -149,9 +146,9 @@ def train_interpolant_with_gan(
             fake_inputs = torch.cat([xt_fake, t], dim=-1)
             fake_proba = discriminator(fake_inputs)
 
-            g_loss_ = nn.functional.softplus(-fake_proba).mean()
+            g_loss_ = torch.nn.functional.softplus(-fake_proba).mean()
         
-        reg_weight_loss = interpolant.get_reg_term(x0, x1, t, xt_fake)
+        reg_weight_loss = interpolant.get_reg_term(x0, x1, t, xt_fake, xt)
         g_loss = g_loss_ + correct_coeff * reg_weight_loss
         
         g_loss.backward()
@@ -167,33 +164,7 @@ def train_interpolant_with_gan(
         })
 
         if epoch % plot_freaquency == 0:
-            with torch.no_grad():
-                batch = utils.sample_gan_batch(
-                    data, 256, 
-                    divisor=t_max, 
-                    ot_sampler=ot_sampler, 
-                    ot='full', 
-                    times=train_timesteps
-                )
-                x0, x1, xt, t = (x.to(device) for x in batch)
-                xt_fake = interpolant(x0, x1, t)
-
-                pca = PCA(n_components=2, random_state=seed)
-                
-                xt_pca = pca.fit_transform(xt.cpu())
-                xt_fake_pca = pca.transform(xt_fake.cpu())
-                fig = plt.figure()
-                
-                plt.scatter(*xt_fake_pca.T, c='red', alpha=0.5, label="Fake")
-                plt.scatter(*xt_pca.T, c='blue', alpha=0.5, label="Real")
-                plt.legend()
-                plt.title(f"PCA of `True` and `Fake` samples for t={int(t[0] * t_max)}")
-
-                wandb.log({
-                    f"{metric_prefix}/scatter_image": wandb.Image(fig), 
-                    f"{metric_prefix}_step": epoch
-                })
-                plt.close(fig)
+            plot_fn(interpolant, epoch, seed, t_max, data, ot_sampler, device, metric_prefix, train_timesteps, wandb)
 
 
 def train_ot_cfm(

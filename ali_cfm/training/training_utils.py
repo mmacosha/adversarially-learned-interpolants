@@ -10,8 +10,11 @@ from pathlib import Path
 
 from tqdm import trange
 
+from matplotlib import pyplot as plt
+from sklearn.decomposition import PCA
 
-### Prepare batches for taining ###
+
+### Prepare batches for training ###
 
 def get_batch(FM, X, batch_size, timesteps, return_noise=False, device='cpu'):
     """Construct a batch with point sfrom each timepoint pair"""
@@ -193,3 +196,32 @@ def init_interpolant_from_checkpoint(*args, **kwargs):
         "Interpolant checkpoint loading not implemented yet."
     )
 
+
+def sc_plot_fn(interpolant, epoch, seed, t_max, data, ot_sampler, device, metric_prefix, train_timesteps, wandb):
+    with torch.no_grad():
+        batch = sample_gan_batch(
+            data, 256,
+            divisor=t_max,
+            ot_sampler=ot_sampler,
+            ot='full',
+            times=train_timesteps
+        )
+        x0, x1, xt, t = (x.to(device) for x in batch)
+        xt_fake = interpolant(x0, x1, t)
+
+        pca = PCA(n_components=2, random_state=seed)
+
+        xt_pca = pca.fit_transform(xt.cpu())
+        xt_fake_pca = pca.transform(xt_fake.cpu())
+        fig = plt.figure()
+
+        plt.scatter(*xt_fake_pca.T, c='red', alpha=0.5, label="Fake")
+        plt.scatter(*xt_pca.T, c='blue', alpha=0.5, label="Real")
+        plt.legend()
+        plt.title(f"PCA of `True` and `Fake` samples for t={int(t[0] * t_max)}")
+
+        wandb.log({
+            f"{metric_prefix}/scatter_image": wandb.Image(fig),
+            f"{metric_prefix}_step": epoch
+        })
+        plt.close(fig)

@@ -36,7 +36,7 @@ class Discriminator(torch.nn.Module):
 
 
 class TrainableInterpolant(nn.Module):
-    def __init__(self, dim, h_dim, t_smooth=0.01, time_varying=False):
+    def __init__(self, dim, h_dim, t_smooth=0.01, time_varying=False, regulariser='linear'):
         super().__init__()
         self.time_varying = time_varying
         self.t_smooth = t_smooth
@@ -45,6 +45,7 @@ class TrainableInterpolant(nn.Module):
             nn.Linear(h_dim, h_dim), nn.ELU(),
             nn.Linear(h_dim, dim)
         )
+        self.regularizer = regulariser
 
     def forward(self, x0, x1, t, training=True):
         t = t[..., None] if t.ndim == 1 else t
@@ -63,6 +64,16 @@ class TrainableInterpolant(nn.Module):
     def linear_interpolant(x0, x1, t):
         t = t[..., None] if t.ndim == 1 else t
         return t * x1 + (1 - t) * x0
+
+    def get_reg_term(self, x0, x1, t, xt_fake, xt):
+        if self.regularizer == 'length':
+            return self.compute_length_reg_term(x0, x1)
+        elif self.regularizer == 'piecewise':
+            return self.compute_piecewise_reg_term(x0, x1, xt, t)
+        elif self.regularizer == 'linear':
+            return self.compute_linear_reg_term(x0, x1, t, xt_fake)
+        else:
+            raise ValueError(f"Unknown regularizer type: {self.regularizer}")
 
     def compute_length_reg_term(self, x0, x1, num_t_steps=100, h=0.001):
         def _interpolant(x0, x1, t):
@@ -86,10 +97,18 @@ class TrainableInterpolant(nn.Module):
             integral += second_derivative.pow(2).sum(-1)
         return integral
 
-    def compute_piecewise_reg_term(self, x0, x1, xt1, xt2, t1, t2):
-        t = t1 + torch.rand_like(t1) * (t2 - t1)
-        xt_linear = xt1 * t +  xt2 * (1 - t)
-        
+    def compute_piecewise_reg_term(self, x0, x1, xt, t_exact):
+        t = t_exact + torch.rand_like(t_exact)
+        t_left = t[t < t_exact]
+        t_right = t[t >= t_exact]
+
+        x0 = x0[torch.randint(0, x0.shape[0], size=(t_left.shape[0],))]
+        x1 = x1[torch.randint(0, x1.shape[0], size=(t_right.shape[0],))]
+
+        xt_linear = torch.zeros_like(xt)
+        xt_linear[t < t_exact] = ((t_exact - t_left) * x0 + t_left * xt[t < t_left]) / t_exact
+        xt_linear[t >= t_exact] = ((1 - t_right) * xt[t >= t_exact] + t_right * x1) / (1 - t_exact)
+
         t = t[..., None] if t.ndim == 1 else t
         xt = self.linear_interpolant(x0, x1, t)
         input_ = torch.cat([x0, x1, t], dim=-1) 
