@@ -17,13 +17,13 @@ from torchcfm.conditional_flow_matching import OTPlanSampler
 
 from data import (
     get_dataset,
-    denormalize, 
+    denormalize,
     denormalize_gradfield
 )
 
 from utils import (
-    sample_gan_batch, 
-    sample_x0_x1, 
+    sample_gan_batch,
+    sample_x0_x1,
     compute_emd,
     fix_seed,
     integrate_interpolant,
@@ -33,15 +33,16 @@ from utils import (
 from interpolants import TrainableInterpolant, Discriminator, MLP
 
 
-def pretain_interpolant(interpolant, pretrain_optimizer_G, ot_sampler, 
-                        train_data, n_pretrain_epochs, gan_batch_size, 
+def pretain_interpolant(interpolant, pretrain_optimizer_G, ot_sampler,
+                        train_data, n_pretrain_epochs, gan_batch_size,
                         train_timesteps, ot='none', metric_prefix="", device='cpu'):
     if n_pretrain_epochs == 0:
         return
-    
+
     for epoch in trange(n_pretrain_epochs, desc="Pretraining Interpolant", leave=False):
         pretrain_optimizer_G.zero_grad()
-        batch = sample_gan_batch(train_data, gan_batch_size, divisor=max(train_timesteps), ot_sampler=ot_sampler, ot=ot, times=train_timesteps)
+        batch = sample_gan_batch(train_data, gan_batch_size, divisor=max(train_timesteps), ot_sampler=ot_sampler, ot=ot,
+                                 times=train_timesteps)
         x0, x1, xt, t = (x.to(device) for x in batch)
         xt_fake = interpolant(x0, x1, t)
 
@@ -50,20 +51,20 @@ def pretain_interpolant(interpolant, pretrain_optimizer_G, ot_sampler,
 
         pretrain_optimizer_G.step()
         wandb.log({
-            f"{metric_prefix}/pretrain_loss": loss.item(), 
+            f"{metric_prefix}/pretrain_loss": loss.item(),
             f"{metric_prefix}_step": epoch}
         )
 
 
 def train_interpolant_with_gan(
-    interpolant, discriminator, ot_sampler, data,
-    gan_optimizer_G, gan_optimizer_D, n_epochs,
-    gan_batch_size, correct_coeff, train_timesteps, seed, min_max,
-    ot='none', plot_freaquency=5000, metric_prefix="", device='cpu', gan_loss='vanilla'
+        interpolant, discriminator, ot_sampler, data,
+        gan_optimizer_G, gan_optimizer_D, n_epochs,
+        gan_batch_size, correct_coeff, train_timesteps, seed, min_max,
+        ot='none', plot_freaquency=5000, metric_prefix="", device='cpu', gan_loss='vanilla'
 ):
     t_max = max(train_timesteps)
     curr_epoch = 0
-    for epoch in trange(curr_epoch, n_epochs, 
+    for epoch in trange(curr_epoch, n_epochs,
                         desc="Training GAN Interpolant", leave=False):
         if epoch > 40_000:
             gan_optimizer_G.param_groups[0]['lr'] = 1e-5
@@ -71,7 +72,7 @@ def train_interpolant_with_gan(
         elif epoch > 100_000:
             gan_optimizer_G.param_groups[0]['lr'] = 1e-6
             gan_optimizer_D.param_groups[0]['lr'] = 5e-6
-        
+
         curr_epoch += 1
         if epoch % 5_000 == 0:
             with torch.no_grad():
@@ -81,25 +82,25 @@ def train_interpolant_with_gan(
                     x0_test, x1_test, xt_test, t_test = (
                         x.to(device) for x in test_batch
                     )
-                    
+
                     xt_fake_test = interpolant(x0_test, x1_test, t_test)
                     emd_t = compute_emd(
-                            denormalize(xt_test, min_max), 
-                            denormalize(xt_fake_test, min_max)
-                        )
+                        denormalize(xt_test, min_max),
+                        denormalize(xt_fake_test, min_max)
+                    )
                     wandb.log({
-                        f"{metric_prefix}/emd_t={time}": emd_t.item(), 
+                        f"{metric_prefix}/emd_t={time}": emd_t.item(),
                         f"{metric_prefix}_step": epoch
                     })
-                    
 
-        batch = sample_gan_batch(data, gan_batch_size, divisor=t_max, ot_sampler=ot_sampler, ot=ot, times=train_timesteps)
+        batch = sample_gan_batch(data, gan_batch_size, divisor=t_max, ot_sampler=ot_sampler, ot=ot,
+                                 times=train_timesteps)
         x0, x1, xt, t = (x.to(device) for x in batch)
         xt_fake = interpolant(x0, x1, t)
 
         real_inputs = torch.cat([xt, t], dim=-1)
         fake_inputs = torch.cat([xt_fake.detach(), t], dim=-1)
-        
+
         real_proba = discriminator(real_inputs)
         fake_proba = discriminator(fake_inputs)
 
@@ -148,7 +149,7 @@ def train_interpolant_with_gan(
             g_loss_ = nn.functional.softplus(-fake_proba).mean()
         reg_weight_loss = interpolant.get_reg_term(x0, x1, t, xt_fake)
         g_loss = g_loss_ + correct_coeff * reg_weight_loss
-        
+
         g_loss.backward()
         gan_optimizer_G.step()
 
@@ -163,32 +164,33 @@ def train_interpolant_with_gan(
 
         if epoch % plot_freaquency == 0:
             with torch.no_grad():
-                batch = sample_gan_batch(data, 256, divisor=t_max, ot_sampler=ot_sampler, ot='full', times=train_timesteps)
+                batch = sample_gan_batch(data, 256, divisor=t_max, ot_sampler=ot_sampler, ot='full',
+                                         times=train_timesteps)
                 x0, x1, xt, t = (x.to(device) for x in batch)
                 xt_fake = interpolant(x0, x1, t)
 
                 pca = PCA(n_components=2, random_state=seed)
-                
+
                 xt_pca = pca.fit_transform(xt.cpu())
                 xt_fake_pca = pca.transform(xt_fake.cpu())
                 fig = plt.figure()
-                
+
                 plt.scatter(*xt_fake_pca.T, c='red', alpha=0.5, label="Fake")
                 plt.scatter(*xt_pca.T, c='blue', alpha=0.5, label="Real")
                 plt.legend()
                 plt.title(f"PCA of `True` and `Fake` samples for t={int(t[0] * t_max)}")
 
                 wandb.log({
-                    f"{metric_prefix}/scatter_image": wandb.Image(fig), 
+                    f"{metric_prefix}/scatter_image": wandb.Image(fig),
                     f"{metric_prefix}_step": epoch
                 })
-                plt.close(fig) 
+                plt.close(fig)
 
 
-def train_ot_cfm(ot_cfm_model, ot_cfm_optimizer, interpolant, 
+def train_ot_cfm(ot_cfm_model, ot_cfm_optimizer, interpolant,
                  ot_sampler, train_data, batch_size, min_max,
                  n_ot_cfm_epochs, metric_prefix="", ot='border', device='cpu', times=(0, -1)):
-    for step in trange(n_ot_cfm_epochs, 
+    for step in trange(n_ot_cfm_epochs,
                        desc="Training OT CFM Interpolant", leave=False):
         ot_cfm_optimizer.zero_grad()
 
@@ -201,21 +203,20 @@ def train_ot_cfm(ot_cfm_model, ot_cfm_optimizer, interpolant,
             if ot == 'border' or ot == 'full':
                 x0, x1 = ot_sampler.sample_plan(x0, x1)
 
-        
         t = torch.rand(x0.shape[0], 1, device=device)
-        
+
         xt = interpolant(x0, x1, t, training=False).detach()
         ut = interpolant.dI_dt(x0, x1, t).detach()
 
         ut = denormalize_gradfield(ut, min_max).float()
         xt = denormalize(xt, min_max).float()
-        
+
         vt = ot_cfm_model(torch.cat([xt, t], dim=-1))
-        
+
         loss = torch.mean((vt - ut) ** 2)
         loss.backward()
         ot_cfm_optimizer.step()
-        
+
         wandb.log({
             f"{metric_prefix}/cfm_loss": loss.item(),
             f"{metric_prefix}_cfm_step": step
@@ -229,12 +230,12 @@ def train_ali(cfg):
     warnings.filterwarnings("ignore")
     ot_sampler = OTPlanSampler('exact', reg=0.1)
 
-    data, min_max = get_dataset(cfg.dataset, cfg.n_data_dims, 
+    data, min_max = get_dataset(cfg.dataset, cfg.n_data_dims,
                                 cfg.normalize_dataset, cfg.whiten)
     timesteps_list = [t for t in range(len(data))]
     # This code assumes that timesteps are in [0, ..., T_max]
-    num_int_steps = cfg.num_int_steps_per_timestep # * max(timesteps_list)
-    
+    num_int_steps = cfg.num_int_steps_per_timestep  # * max(timesteps_list)
+
     int_results, cfm_results = {}, {}
 
     run = wandb.init(
@@ -245,7 +246,7 @@ def train_ali(cfg):
     )
 
     os.makedirs(f"{run.dir}/checkpoints", exist_ok=True)
-    
+
     for seed in tqdm(seed_list, desc="Seeds"):
         fix_seed(seed)
         int_results[f"seed={seed}"] = []
@@ -254,7 +255,7 @@ def train_ali(cfg):
         for removed_t in tqdm(timesteps_list[1: -1], desc="Timesteps", leave=False):
             curr_timesteps = remove(timesteps_list, removed_t)
             metric_prefix = f"t={removed_t}_{seed=}"
-            
+
             # Configure neural networks
             interpolant = TrainableInterpolant(cfg.dim, cfg.net_hidden, cfg.t_smooth, True).to(cfg.device)
             pretrain_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=1e-3)
@@ -299,7 +300,7 @@ def train_ali(cfg):
                         "ali_cfm/wandb/run-20250822_091600-1kw46hn4/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 interpolant.load_state_dict(load_checkpoint['interpolant'])
-            
+
             # Compute metrics for GAN interpolant
             x0 = data[0].to(cfg.device)
             x1 = data[-1].to(cfg.device)
@@ -312,7 +313,7 @@ def train_ali(cfg):
             t = removed_t / (len(timesteps_list) - 1)
 
             int_emd = compute_emd(
-                denormalize(data[removed_t], min_max), 
+                denormalize(data[removed_t], min_max),
                 denormalize(int_traj[int(100 * t)], min_max)
             )
             int_results[f"seed={seed}"].append(int_emd.item())
@@ -336,7 +337,7 @@ def train_ali(cfg):
 
             # Compute metrics for OT-CFM
             node = NeuralODE(torch_wrapper(ot_cfm_model),
-                            solver="dopri5", sensitivity="adjoint")
+                             solver="dopri5", sensitivity="adjoint")
 
             with torch.no_grad():
                 ot_cfm_traj = node.trajectory(
@@ -345,7 +346,7 @@ def train_ali(cfg):
                 )
 
             cfm_emd = compute_emd(
-                denormalize(data[removed_t], min_max).to(cfg.device), 
+                denormalize(data[removed_t], min_max).to(cfg.device),
                 ot_cfm_traj[-1].float().to(cfg.device),
             )
             cfm_results[f"seed={seed}"].append(cfm_emd.item())
@@ -355,15 +356,15 @@ def train_ali(cfg):
             })
 
             # Save artifacts for given seed and t
-            #checkpoint = {
+            # checkpoint = {
             #    "interpolant": interpolant.state_dict(),
             #    "discriminator": discriminator.state_dict(),
             #    "ot_cfm_model": ot_cfm_model.state_dict(),
-            #}
-            #save_path = os.path.join(
+            # }
+            # save_path = os.path.join(
             #    run.dir, "checkpoints", f"{metric_prefix}_ali_cfm.pth"
-            #)
-            #torch.save(checkpoint, save_path)
+            # )
+            # torch.save(checkpoint, save_path)
 
     int_results = wandb.Table(
         dataframe=finish_results_table(int_results, timesteps_list[1: -1])
@@ -374,7 +375,7 @@ def train_ali(cfg):
         dataframe=finish_results_table(cfm_results, timesteps_list[1: -1])
     )
     wandb.log({"cfm_results": cfm_results})
-    
+
     wandb.finish()
 
 
