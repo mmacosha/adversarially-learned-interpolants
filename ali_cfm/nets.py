@@ -64,7 +64,42 @@ class TrainableInterpolant(nn.Module):
         t = t[..., None] if t.ndim == 1 else t
         return t * x1 + (1 - t) * x0
 
-    def get_reg_term(self, x0, x1, t, xt):
+    def compute_length_reg_term(self, x0, x1, num_t_steps=100, h=0.001):
+        def _interpolant(x0, x1, t):
+            xt = self.linear_interpolant(x0, x1, t)
+            input_ = torch.cat([x0, x1, t], dim=-1) 
+            correction = self.interpolant_net(input_)
+            return xt + t * (1 - t) * correction
+
+        def estimate_second_derivative(x0, x1, t, h=0.001):
+            t_p_h, t_m_h = t + h, t - h
+            second_derivative = (
+                _interpolant(x0, x1, t_p_h) + _interpolant(x0, x1, t_m_h) - \
+                2 * _interpolant(x0, x1, t)
+            ) / h**2
+            return second_derivative
+
+        integral = 0.0
+        for t in torch.linspace(0, 1, num_t_steps):
+            t = torch.ones(x0.shape[0], 1, device=x0.device) * t
+            second_derivative = estimate_second_derivative(x0, x1, t, h)
+            integral += second_derivative.pow(2).sum(-1)
+        return integral
+
+    def compute_piecewise_reg_term(self, x0, x1, xt1, xt2, t1, t2):
+        t = t1 + torch.rand_like(t1) * (t2 - t1)
+        xt_linear = xt1 * t +  xt2 * (1 - t)
+        
+        t = t[..., None] if t.ndim == 1 else t
+        xt = self.linear_interpolant(x0, x1, t)
+        input_ = torch.cat([x0, x1, t], dim=-1) 
+        correction = self.interpolant_net(input_)
+        xt_interpolant = xt + t * (1 - t) * correction
+
+        return (xt_linear - xt_interpolant).pow(2).mean()
+
+
+    def compute_linear_reg_term(self, x0, x1, t, xt):
         correction = xt - self.linear_interpolant(x0, x1, t)
         batch_size = correction.shape[0]
         if correction.ndim == 1:

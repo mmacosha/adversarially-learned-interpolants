@@ -81,6 +81,7 @@ def train_ali_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epo
     return cfm_model, losses
 
 
+
 def main(distribution):
     seed = 0
     size = 1200
