@@ -28,6 +28,8 @@ correct_coeff: 1.
 num_ali_pretrain_steps: 2001
 pretrain_lr: 1e-3
 
+reg_term_type: 'linear'
+num_t_steps: 10
 gan_loss: RpGAN
 interpolant_gen_lr: 5e-5
 interpolant_disc_lr: 5e-5
