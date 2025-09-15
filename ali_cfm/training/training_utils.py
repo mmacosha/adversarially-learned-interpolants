@@ -197,7 +197,7 @@ def init_interpolant_from_checkpoint(*args, **kwargs):
     )
 
 
-def sc_plot_fn(interpolant, epoch, seed, t_max, data, ot_sampler, device, metric_prefix, train_timesteps, wandb):
+def sc_plot_fn(interpolant, epoch, seed, t_max, data, ot_sampler, device, metric_prefix, train_timesteps, wandb, min_max):
     with torch.no_grad():
         batch = sample_gan_batch(
             data, 256,

@@ -156,7 +156,7 @@ def train_interpolant_with_gan(
 
         wandb.log({
             f"{metric_prefix}/d_loss": d_loss.item(),
-            f"{metric_prefix}/g_loss": g_loss.item(),
+            f"{metric_prefix}/g_loss": g_loss_      .item(),
             f"{metric_prefix}/reg_weight_loss": reg_weight_loss.item(),
             f"{metric_prefix}/fake_proba": fake_proba.mean().item(),
             f"{metric_prefix}/real_proba": real_proba.mean().item(),
@@ -164,7 +164,7 @@ def train_interpolant_with_gan(
         })
 
         if epoch % plot_freaquency == 0:
-            plot_fn(interpolant, epoch, seed, t_max, data, ot_sampler, device, metric_prefix, train_timesteps, wandb)
+            plot_fn(interpolant, epoch, seed, t_max, data, ot_sampler, device, metric_prefix, train_timesteps, wandb, min_max)
 
 
 def train_ot_cfm(

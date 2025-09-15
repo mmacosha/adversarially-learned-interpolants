@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import torch
 
 import os
@@ -18,10 +19,10 @@ import ali_cfm.training.training_utils as utils
 from ali_cfm.training.training_funcs import pretain_interpolant, train_interpolant_with_gan
 from ali_cfm.loggin_and_metrics import compute_emd
 from ali_cfm.data_utils import get_dataset, denormalize, denormalize_gradfield
+from mnist_utils import plot_fn
 
 
-from cell_tracking_utils import CellOverlayViewer
-from ali_cfm.nets import TrainableInterpolant, Discriminator, MLP
+from ali_cfm.nets import Discriminator, MLP, TrainableInterpolantMNIST, RotationCFM, CorrectionUNet, UNetCFM
 
 
 def fix_seed(seed: int = 42):
@@ -45,22 +46,14 @@ def train_ot_cfm(
                        desc="Training OT CFM Interpolant", leave=False):
         ot_cfm_optimizer.zero_grad()
 
-        if ot == 'mmot':
-            t_max = max(times)
-            batch = utils.sample_gan_batch(train_data, batch_size, divisor=t_max, ot_sampler=ot_sampler, ot=ot, times=times)
-            x0, x1, xt, _ = (x.to(device) for x in batch)
-        else:
-            x0, x1 = utils.sample_x0_x1(train_data, batch_size, device=device)
-            if ot == 'border' or ot == 'full':
-                x0, x1 = ot_sampler.sample_plan(x0, x1)
+        x0, x1 = utils.sample_x0_x1(train_data, batch_size, device=device)
+        if ot == 'border' or ot == 'full':
+            x0, x1 = ot_sampler.sample_plan(x0, x1)
 
         t = torch.rand(x0.shape[0], 1, device=device)
 
         xt = interpolant(x0, x1, t, training=False).detach()
         ut = interpolant.dI_dt(x0, x1, t).detach()
-
-        ut = denormalize_gradfield(ut, min_max).float()
-        xt = denormalize(xt, min_max).float()
 
         vt = ot_cfm_model(torch.cat([xt, t], dim=-1))
 
@@ -80,14 +73,10 @@ def train_ali(cfg):
     seed_list = cfg.seed_list
     warnings.filterwarnings("ignore")
     ot_sampler = OTPlanSampler('exact', reg=0.1)
-    n_samples = 10
-    cov = CellOverlayViewer('/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/data/PhC-C2DH-U373/01/')
 
-    data, min_max = get_dataset(cfg.dataset, cfg.n_data_dims,
-                                cfg.normalize_dataset, cfg.whiten)
+
+    data, min_max = get_dataset("RotatingMNIST_train", cfg.n_data_dims, normalize=cfg.normalize_dataset)
     timesteps_list = [t for t in range(len(data))]
-    # This code assumes that timesteps are in [0, ..., T_max]
-    num_int_steps = cfg.num_int_steps_per_timestep
 
     int_results, cfm_results = {}, {}
 
@@ -108,15 +97,12 @@ def train_ali(cfg):
         curr_timesteps = timesteps_list
         metric_prefix = f"t={seed=}"
 
-        # N_min = min([x.shape[0] for x in data])
-        # idx = np.random.choice(np.arange(0, N_min), n_samples, replace=False)
-        # subset_data = [x[idx] for x in data]
-        subset_data = [x[np.random.choice(np.arange(0, x.shape[0]), n_samples, replace=False)] for x in data]
+        cfg.dim = data[0].shape[1]
 
         # Configure neural networks
-        interpolant = TrainableInterpolant(cfg.dim, cfg.net_hidden, cfg.t_smooth, True,
-                                           regulariser=cfg.regulariser
-                                           ).to(cfg.device)
+        interpolant = TrainableInterpolantMNIST(cfg.dim, cfg.net_hidden, cfg.t_smooth, True,
+                                                regulariser=cfg.regulariser
+                                                ).to(cfg.device)
         pretrain_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=1e-3)
 
         discriminator = Discriminator(
@@ -125,8 +111,11 @@ def train_ali(cfg):
         gan_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=cfg.lr_G)
         gan_optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=cfg.lr_D)
 
-        ot_cfm_model = MLP(dim=cfg.dim, time_varying=True, w=cfg.net_hidden).to(cfg.device)
-        ot_cfm_optimizer = torch.optim.Adam(ot_cfm_model.parameters(), 1e-3)
+        # ot_cfm_model = MLP(dim=cfg.dim, time_varying=True, w=cfg.net_hidden).to(cfg.device)
+        # ot_cfm_model = RotationCFM(dim=cfg.dim).to(cfg.device)
+        ot_cfm_model = CorrectionUNet().to(cfg.device)
+        # ot_cfm_model = UNetCFM().to(cfg.device)
+        ot_cfm_optimizer = torch.optim.Adam(ot_cfm_model.parameters(), cfg.lr_CFM)
 
         if cfg.train_interpolants:
             # Pretrain interpolant
@@ -134,7 +123,7 @@ def train_ali(cfg):
             wandb.define_metric(f"{pretain_metric_prefix}/*",
                                 step_metric=f"{pretain_metric_prefix}_step")
             pretain_interpolant(
-                interpolant, pretrain_optimizer_G, ot_sampler, subset_data,
+                interpolant, pretrain_optimizer_G, ot_sampler, data,
                 cfg.n_pretrain_epochs, cfg.batch_size, curr_timesteps,
                 ot=cfg.pretain_ot, metric_prefix=pretain_metric_prefix,
                 device=cfg.device
@@ -147,41 +136,30 @@ def train_ali(cfg):
 
             train_interpolant_with_gan(
                 interpolant, discriminator, ot_sampler,
-                subset_data,
+                data,
                 gan_optimizer_G, gan_optimizer_D,
                 cfg.n_epochs, cfg.batch_size, cfg.correct_coeff,
                 curr_timesteps, seed, min_max, ot=cfg.interpolant_ot,
                 metric_prefix=interpolant_metric_prefix,
-                device=cfg.device, gan_loss=cfg.gan_loss, plot_fn=cov.plot_fn, compute_emd_flag=False
+                device=cfg.device, gan_loss=cfg.gan_loss, plot_fn=plot_fn, compute_emd_flag=False
             )
+
+            checkpoint = {
+                "interpolant": interpolant.state_dict(),
+                "discriminator": discriminator.state_dict()
+            }
+            save_path = os.path.join(
+                run.dir, "checkpoints", f"{metric_prefix}_ali_cfm.pth"
+            )
+            torch.save(checkpoint, save_path)
         else:
-            PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/wandb/"
-                    "run-20250909_151711-o1ae2po2/files/checkpoints")
+            PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/rotating_MNIST/wandb/"
+                    "run-20250915_145507-2k36hqa2/files/checkpoints")
             load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
             interpolant.load_state_dict(load_checkpoint['interpolant'])
 
-        cov.plot_fn(interpolant, None, None, max(timesteps_list), subset_data,
-                    ot_sampler, cfg.device, None, timesteps_list,
-                    None, min_max, method="ali")
-
-        # Compute metrics for GAN interpolant
-        # x0 = subset_data[0].to(cfg.device)
-        # x1 = subset_data[-1].to(cfg.device)
-        # x0, x1 = ot_sampler.sample_plan(x0, x1)
-        #
-        # int_traj = integrate_interpolant(
-        #     x0, x1, num_int_steps, interpolant,
-        # )
-
-        # TODO: plot interpolant trajectories
-
-        # t = removed_t / (len(timesteps_list) - 1)
-        #
-        # int_emd = compute_emd(
-        #     denormalize(data[removed_t], min_max),
-        #     denormalize(int_traj[int(100 * t)], min_max)
-        # )
-        # int_results[f"seed={seed}"].append(int_emd.item())
+        # plot_fn(interpolant, 0, seed, len(timesteps_list) - 1, data, ot_sampler, cfg.device, metric_prefix,
+        #         timesteps_list, None, min_max)
 
         if cfg.train_cfm:
             # Train OT-CFM using GAN interpolant
@@ -190,43 +168,74 @@ def train_ali(cfg):
                                 step_metric=f"{cfm_metric_prefix}_step")
             train_ot_cfm(
                 ot_cfm_model, ot_cfm_optimizer, interpolant, ot_sampler,
-                subset_data, cfg.batch_size, min_max, cfg.n_ot_cfm_epochs,
+                data, cfg.batch_size, min_max, cfg.n_ot_cfm_epochs,
                 metric_prefix=cfm_metric_prefix, ot=cfg.cfm_ot,
                 device=cfg.device, times=curr_timesteps
             )
             # Save artifacts for given seed and t
             checkpoint = {
-                "interpolant": interpolant.state_dict(),
-                "discriminator": discriminator.state_dict(),
                 "ot_cfm_model": ot_cfm_model.state_dict(),
+                "interpolant": interpolant.state_dict(),
+                "discriminator": discriminator.state_dict()
             }
             save_path = os.path.join(
                 run.dir, "checkpoints", f"{metric_prefix}_ali_cfm.pth"
             )
             torch.save(checkpoint, save_path)
         else:
-            PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/wandb"
-                    "/run-20250909_151711-o1ae2po2/files/checkpoints")
+            PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/rotating_MNIST/wandb"
+                    "/run-20250915_155452-15yae40c/files/checkpoints")
             load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
             ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
-        cov.plot_fn(interpolant, None, None, max(timesteps_list), data,
-                    ot_sampler, cfg.device, None, timesteps_list,
-                    None, min_max, method="ali")
 
         # Compute metrics for OT-CFM
         node = NeuralODE(torch_wrapper(ot_cfm_model),
                          solver="dopri5", sensitivity="adjoint")
 
-        X0 = torch.tensor(data[0], dtype=torch.float32).to(cfg.device)
+        test_data, min_max = get_dataset("RotatingMNIST_test", cfg.n_data_dims, normalize=cfg.normalize_dataset)
+        # test_data, min_max = get_dataset("RotatingMNIST_train", cfg.n_data_dims, normalize=cfg.normalize_dataset)
+        timesteps_list_test = [t for t in range(len(test_data))]
+
+        X0 = torch.tensor(test_data[0], dtype=torch.float32).to(cfg.device)
+        t_s = torch.linspace(0, 1, 101)
         with torch.no_grad():
-            cfm_traj = node.trajectory(denormalize(X0, min_max),
-                                       t_span= torch.tensor(timesteps_list, dtype=torch.float32).to(cfg.device) / max(timesteps_list)  # torch.linspace(0, 1, num_int_steps + 1),
+            cfm_traj = node.trajectory(X0,
+                                       # t_span= torch.tensor(timesteps_list_test, dtype=torch.float32).to(cfg.device) / max(timesteps_list_test)  #
+                                       t_s
                                        )
 
-        cov.plot_fn(cfm_traj, None, None, max(timesteps_list), data,
-                    ot_sampler, cfg.device, None, np.array(timesteps_list) / max(timesteps_list),
-                    None, min_max, method="ali-cfm")
+        img_dim = int(np.sqrt(cfg.dim))
+        fig, ax = plt.subplots(2, len(timesteps_list_test) - 1, figsize=(20, 3))
+        for i, t in enumerate(timesteps_list_test[1:]):
+            # X_prev = torch.tensor(test_data[t - 1], dtype=torch.float32).to(cfg.device)
+            # with torch.no_grad():
+            #     cfm_traj = node.trajectory(denormalize(X_prev, min_max), t_span=torch.linspace((t - 1) / max(timesteps_list_test), t / max(timesteps_list_test), 11).to(cfg.device))
+            # cfm_emd = compute_emd(
+            #     denormalize(test_data[t], min_max).to(cfg.device),
+            #     cfm_traj[-1].float().to(cfg.device),
+            # )
+
+            cfm_t = torch.argmin(torch.abs(t_s - t / max(timesteps_list_test)))
+            cfm_emd = compute_emd(
+                denormalize(test_data[t], min_max).to(cfg.device),
+                cfm_traj[cfm_t].float().to(cfg.device),
+            )
+
+
+            ax[0, i].imshow(cfm_traj[cfm_t][0].reshape(img_dim, img_dim).cpu(), cmap='gray')
+            ax[0, i].set_title(f"t={360 * (t / max(timesteps_list_test)):.0f}°")
+            ax[0, i].axis('off')
+            ax[1, i].imshow(test_data[t][0].reshape(img_dim, img_dim).cpu(), cmap='gray')
+            ax[1, i].axis('off')
+            cfm_results[f"seed={seed}"].append(cfm_emd.item())
+
+            wandb.log({
+                f"{metric_prefix}_cfm/cfm_result_t={t}": cfm_emd.item()
+            })
+        plt.tight_layout()
+        plt.show()
+
 
         # mean_emd = 0
         # for t in timesteps_list[1:]:

@@ -7,6 +7,7 @@ import scanpy as sc
 from typing import List
 
 from sklearn.preprocessing import StandardScaler
+from rotating_MNIST.create_dataset import create_dataset
 
 
 # DATA_PATH = Path("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/data")
@@ -132,6 +133,12 @@ def get_dataset(
             coords = coords[:, [1, 0]]  # swap -> (x, y)
 
             X.append(coords)
+
+    elif name == 'RotatingMNIST_train':
+        X, _ = create_dataset(3, B=100, test=False)
+
+    elif name == 'RotatingMNIST_test':
+        _, X = create_dataset(3, B=10, test=True)
 
     else:
         raise ValueError(f"Unknown dataset {name}")

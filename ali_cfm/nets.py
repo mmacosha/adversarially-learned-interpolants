@@ -70,12 +70,14 @@ class TrainableInterpolant(nn.Module):
             return self.compute_length_reg_term(x0, x1)
         elif self.regularizer == 'piecewise':
             return self.compute_piecewise_reg_term(x0, x1, xt, t)
+        elif self.regularizer == 'regression':
+            return self.compute_regression_term(xt_fake, xt)
         elif self.regularizer == 'linear':
             return self.compute_linear_reg_term(x0, x1, t, xt_fake)
         else:
             raise ValueError(f"Unknown regularizer type: {self.regularizer}")
 
-    def compute_length_reg_term(self, x0, x1, num_t_steps=100, h=0.001):
+    def compute_length_reg_term(self, x0, x1, num_t_steps=10, h=0.001):
         def _interpolant(x0, x1, t):
             xt = self.linear_interpolant(x0, x1, t)
             input_ = torch.cat([x0, x1, t], dim=-1) 
@@ -95,19 +97,21 @@ class TrainableInterpolant(nn.Module):
             t = torch.ones(x0.shape[0], 1, device=x0.device) * t
             second_derivative = estimate_second_derivative(x0, x1, t, h)
             integral += second_derivative.pow(2).sum(-1)
-        return integral
+        return integral.mean()
 
     def compute_piecewise_reg_term(self, x0, x1, xt, t_exact):
-        t = t_exact + torch.rand_like(t_exact)
+        t = t_exact + torch.randn_like(t_exact)
         t_left = t[t < t_exact]
         t_right = t[t >= t_exact]
 
-        x0 = x0[torch.randint(0, x0.shape[0], size=(t_left.shape[0],))]
-        x1 = x1[torch.randint(0, x1.shape[0], size=(t_right.shape[0],))]
+        x0_ = x0[torch.randperm(x0.shape[0])[:t_left.shape[0]]]
+        x1_ = x1[torch.randperm(x1.shape[0])[:t_right.shape[0]]]
+        # x0 = x0[torch.randint(0, x0.shape[0], size=(t_left.shape[0],))]
+        # x1 = x1[torch.randint(0, x1.shape[0], size=(t_right.shape[0],))]
 
         xt_linear = torch.zeros_like(xt)
-        xt_linear[t < t_exact] = ((t_exact - t_left) * x0 + t_left * xt[t < t_left]) / t_exact
-        xt_linear[t >= t_exact] = ((1 - t_right) * xt[t >= t_exact] + t_right * x1) / (1 - t_exact)
+        xt_linear[(t < t_exact).squeeze()] = ((t_exact[t < t_exact] - t_left).unsqueeze(-1) * x0_ + t_left.unsqueeze(-1) * xt[(t < t_exact).squeeze()]) / (t_exact[t < t_exact].unsqueeze(-1))
+        xt_linear[(t >= t_exact).squeeze()] = ((1 - t_right).unsqueeze(-1) * xt[(t >= t_exact).squeeze()] + t_right.unsqueeze(-1) * x1_) / (1 - t_exact[t >= t_exact].unsqueeze(-1))
 
         t = t[..., None] if t.ndim == 1 else t
         xt = self.linear_interpolant(x0, x1, t)
@@ -116,6 +120,10 @@ class TrainableInterpolant(nn.Module):
         xt_interpolant = xt + t * (1 - t) * correction
 
         return (xt_linear - xt_interpolant).pow(2).mean()
+
+    def compute_regression_term(self, x_hat, xt):
+        # return (x_hat - xt).pow(2).mean()
+        return torch.abs(x_hat - xt).mean()
 
 
     def compute_linear_reg_term(self, x0, x1, t, xt):
@@ -142,7 +150,255 @@ class TrainableInterpolant(nn.Module):
             t * (1 - t) * corr_jac.squeeze()
         )
 
+class TrainableInterpolantMNIST(TrainableInterpolant):
+    def __init__(self, dim, h_dim, t_smooth=0.01, time_varying=False, regulariser='linear'):
+        super().__init__(dim=dim, h_dim=h_dim, t_smooth=t_smooth, time_varying=time_varying, regulariser=regulariser)
+        # self.interpolant_net = RotationGenerator(dim=dim)
+        self.interpolant_net = RotationGenerator(dim=dim, latent_dim=64, hidden=1024)
 
-class CubicSplineInterpolant:
-    def __init__(self):
-        pass
+    def forward(self, x0, x1, t, training=True):
+        """
+        x0,x1: (B,dim), t: (B,) or (B,1)
+        Returns: (B,dim)
+        """
+        if t.ndim == 1:
+            t = t[:, None]  # (B,1)
+
+        xt = self.linear_interpolant(x0, x1, t)
+
+        if training and self.t_smooth > 0:
+            t_input = t + torch.randn_like(t) * self.t_smooth
+            t_input = t_input.clamp(0, 1)
+        else:
+            t_input = t
+
+        input_ = torch.cat([x0, x1, t_input], dim=-1)
+
+        correction = self.interpolant_net(input_)
+
+        return xt + (t * (1 - t)) * correction
+
+
+class RotationGenerator(nn.Module):
+    def __init__(self, dim, latent_dim=64, hidden=1024):
+        super().__init__()
+
+        # Encode input digit (x0, flattened 784)
+        self.enc = nn.Sequential(
+            nn.Linear(dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, latent_dim), nn.ReLU()
+        )
+
+        # Combine digit encoding + theta encoding
+        in_dim = 2 * latent_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, dim)
+        )
+
+        # self.theta_net = nn.Sequential(
+        #     nn.Linear(1, 64), nn.ReLU(),
+        #     nn.Linear(64, 64), nn.ReLU(),
+        #     nn.Linear(64, 1)
+        # )
+
+        self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=latent_dim)
+
+    def forward(self, input_):
+        """
+        x0: (B,784) flattened MNIST image
+        theta: (B,1) rotation angle (in radians or normalized [0,1])
+        """
+        dim = (input_.shape[-1] - 1) // 2
+        x0, x1, t = input_[..., :dim], input_[..., dim:2 * dim], input_[..., -1:]
+        # theta = self.theta_net(t) * torch.pi  # t * 360 / 180 * torch.pi
+        theta = self.t_embed(t)  # (B, latent_dim)
+
+        z_x = self.enc(x0)  # (B, latent_dim)
+        z = torch.cat([z_x, theta], dim=-1)
+        out = self.mlp(z)  # (B,784)
+        return out
+
+
+class RotationCFM(nn.Module):
+    def __init__(self, dim, latent_dim=64, hidden=1024):
+        super().__init__()
+
+        # Encode input digit (x0, flattened 784)
+        self.enc = nn.Sequential(
+            nn.Linear(dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, latent_dim), nn.ReLU()
+        )
+
+        # Combine digit encoding + theta encoding
+        in_dim = latent_dim + 1
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, dim)
+        )
+
+        self.theta_net = nn.Sequential(
+            nn.Linear(1, 64), nn.ReLU(),
+            nn.Linear(64, 64), nn.ReLU(),
+            nn.Linear(64, 1)
+        )
+
+    def forward(self, input_):
+        xt, t = input_[..., :-1], input_[..., -1:]
+        theta = self.theta_net(t) * torch.pi  # t * 360 / 180 * torch.pi
+
+        z_x = self.enc(xt)  # (B, latent_dim)
+        z = torch.cat([z_x, theta], dim=-1)
+        out = self.mlp(z)  # (B,784)
+        return out
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, padding=1),
+            nn.GroupNorm(8, out_ch),
+            nn.SiLU(),
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.GroupNorm(8, out_ch),
+            nn.SiLU(),
+        )
+
+    def forward(self, x):
+        return self.conv(x)
+
+class CorrectionUNet(nn.Module):
+    def __init__(self, in_ch=2, base=32, interpolant=False):
+        super().__init__()
+        self.interpolant = interpolant
+
+        self.enc1 = ConvBlock(in_ch, base)
+        self.enc2 = ConvBlock(base, base*2)
+        self.down = nn.MaxPool2d(2)
+
+        self.mid  = ConvBlock(base*2, base*4)
+
+        self.up   = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec2 = ConvBlock(base*4 + base*2, base*2)
+        self.dec1 = ConvBlock(base*2 + base, base)
+
+        self.out = nn.Conv2d(base, 1, 1)
+
+        self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=256)
+
+    def forward(self, input_):
+        if self.interpolant == True:
+            dim = (input_.shape[-1] - 1) // 2
+            xt, _, t = input_[..., :dim], input_[..., dim:2 * dim], input_[..., -1:]
+        else:
+            xt, t = input_[..., :-1], input_[..., -1:]
+        xt = xt.view(xt.shape[0], 1, int(xt.shape[1] ** 0.5), int(xt.shape[1] ** 0.5))
+        B, _, H, W = xt.shape
+        # theta = self.theta_net(t) * torch.pi
+        theta = self.t_embed(t) * torch.pi  # (B, 256)
+        theta_channel = theta.view(B, 1, H, W)# .expand(B, 1, H, W)
+        inp = torch.cat([xt, theta_channel], dim=1)  # (B,2,H,W)
+        # inp = xt
+
+        e1 = self.enc1(inp)         # (B, base, H, W)
+        x  = self.down(e1)
+        e2 = self.enc2(x)           # (B, 2*base, H/2, W/2)
+        x  = self.down(e2)
+
+        # theta_channel = theta.view(B, 1, 1, 1).expand(B, 1, x.shape[-2], x.shape[-1])
+        # x = torch.cat([x, theta_channel], dim=1)
+
+        x  = self.mid(x)            # (B, 4*base, H/4, W/4)
+
+        x  = self.up(x)             # (B, 4*base, H/2, W/2)
+        x  = torch.cat([x, e2], dim=1)  # (B, 6*base, H/2, W/2)
+        x  = self.dec2(x)           # (B, 2*base, H/2, W/2)
+
+        x  = self.up(x)             # (B, 2*base, H, W)
+        x  = torch.cat([x, e1], dim=1)  # (B, 3*base, H, W)
+        x  = self.dec1(x)           # (B, base, H, W)
+
+        return self.out(x).view(B, -1)  # (B, H*W)
+
+
+
+class TimeEmbedding(nn.Module):
+    def __init__(self, n_frequencies=6, out_dim=64):
+        super().__init__()
+        self.nf = n_frequencies
+        self.proj = nn.Sequential(
+            nn.Linear(2 * n_frequencies, out_dim),
+            nn.SiLU(),
+            nn.Linear(out_dim, out_dim)
+        )
+
+    def forward(self, t):  # t: (B, 1)
+        # Build [sin(2^k pi t), cos(2^k pi t)]
+        device = t.device
+        k = torch.arange(self.nf, device=device, dtype=t.dtype)
+        phases = (2.0 ** k)[None, :] * torch.pi * t  # (B, nf)
+        emb = torch.cat([torch.sin(phases), torch.cos(phases)], dim=-1)  # (B, 2*nf)
+        return self.proj(emb)  # (B, out_dim)
+
+
+class FiLM(nn.Module):
+    def __init__(self, emb_dim, n_channels):
+        super().__init__()
+        self.to_scale = nn.Linear(emb_dim, n_channels)
+        self.to_shift = nn.Linear(emb_dim, n_channels)
+
+    def forward(self, x, emb):  # x: (B, C, H, W), emb: (B, E)
+        s = self.to_scale(emb).unsqueeze(-1).unsqueeze(-1)
+        b = self.to_shift(emb).unsqueeze(-1).unsqueeze(-1)
+        return x * (1 + s) + b
+
+class UNetCFM(nn.Module):
+    def __init__(self, in_ch=1, base=32, t_emb_dim=64):
+        super().__init__()
+        self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=t_emb_dim)
+
+        self.enc1 = ConvBlock(in_ch, base)
+        self.film1 = FiLM(t_emb_dim, base)
+        self.enc2 = ConvBlock(base, base*2)
+        self.film2 = FiLM(t_emb_dim, base*2)
+        self.down = nn.MaxPool2d(2)
+
+        self.mid  = ConvBlock(base*2, base*4)
+        self.filmM = FiLM(t_emb_dim, base*4)
+
+        self.up   = nn.Upsample(scale_factor=2, mode='nearest')
+        self.dec2 = ConvBlock(base*4 + base*2, base*2)
+        self.film3 = FiLM(t_emb_dim, base*2)
+        self.dec1 = ConvBlock(base*2 + base, base)
+        self.film4 = FiLM(t_emb_dim, base)
+
+        self.out = nn.Conv2d(base, 1, 1)
+
+    def forward(self, input_):
+
+        inp, t = input_[..., :-1], input_[..., -1:]
+        inp = inp.view(inp.shape[0], 1, int(inp.shape[1] ** 0.5), int(inp.shape[1] ** 0.5))
+        B, _, H, W = inp.shape
+
+        te = self.t_embed(t)  # (B, t_emb_dim)
+
+        e1 = self.enc1(inp); e1 = self.film1(e1, te)
+        x  = self.down(e1)
+        e2 = self.enc2(x);   e2 = self.film2(e2, te)
+        x  = self.down(e2)
+
+        x  = self.mid(x);    x  = self.filmM(x, te)
+
+        x  = self.up(x)
+        x  = torch.cat([x, e2], dim=1)
+        x  = self.dec2(x);   x  = self.film3(x, te)
+
+        x  = self.up(x)
+        x  = torch.cat([x, e1], dim=1)
+        x  = self.dec1(x);   x  = self.film4(x, te)
+
+        return self.out(x).view(B, -1)
