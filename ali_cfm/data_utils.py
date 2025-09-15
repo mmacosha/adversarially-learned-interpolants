@@ -5,6 +5,7 @@ import torch
 import numpy as np
 import scanpy as sc
 from typing import List
+import pandas as pd
 
 from sklearn.preprocessing import StandardScaler
 from rotating_MNIST.create_dataset import create_dataset
@@ -140,6 +141,19 @@ def get_dataset(
     elif name == 'RotatingMNIST_test':
         _, X = create_dataset(3, B=10, test=True)
 
+    elif name == "ST":
+        df_u2 = pd.read_csv('../data/ST_images/aligned_spots/U2_tumor_coordinates.csv')
+        df_u3 = pd.read_csv('../data/ST_images/aligned_spots/U3_tumor_coordinates.csv')
+        df_u4 = pd.read_csv('../data/ST_images/aligned_spots/U4_tumor_coordinates.csv')
+        df_u5 = pd.read_csv('../data/ST_images/aligned_spots/U5_tumor_coordinates.csv')
+
+        X0 = np.array(df_u2.iloc[:, -2:].values, dtype=np.float32)
+        Xt1 = np.array(df_u3.iloc[:, -2:].values, dtype=np.float32)
+        Xt2 = np.array(df_u4.iloc[:, -2:].values, dtype=np.float32)
+        X1 = np.array(df_u5.iloc[:, -2:].values, dtype=np.float32)
+
+        X = [X0, Xt1, Xt2, X1]
+
     else:
         raise ValueError(f"Unknown dataset {name}")
     
@@ -154,3 +168,6 @@ def get_dataset(
         return Xn, (min_, max_)
     else:
         return X, None
+
+
+
