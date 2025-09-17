@@ -115,11 +115,8 @@ def train_ali(cfg):
                 wandb.define_metric(f"{pretain_metric_prefix}/*",
                                     step_metric=f"{pretain_metric_prefix}_step")
                 pretain_interpolant(
-                    interpolant, pretrain_optimizer_G, ot_sampler, data,
-                    cfg.num_ali_pretrain_steps, cfg.batch_size, curr_timesteps,
-                    ot=cfg.pretain_ot, 
-                    metric_prefix=pretain_metric_prefix,
-                    device=cfg.device
+                    interpolant, pretrain_optimizer_G, ot_sampler, 
+                    data, curr_timesteps, pretain_metric_prefix, cfg
                 )
 
                 # Train interpolant with GAN
@@ -128,18 +125,24 @@ def train_ali(cfg):
                                     step_metric=f"{interpolant_metric_prefix}_step")
 
                 train_interpolant_with_gan(
-                    interpolant, discriminator, ot_sampler,
-                    data,
-                    gan_optimizer_G, gan_optimizer_D,
-                    cfg.num_ali_train_steps, cfg.batch_size, cfg.correct_coeff,
-                    curr_timesteps, seed, min_max, 
-                    ot=cfg.interpolant_ot,
-                    metric_prefix=interpolant_metric_prefix,
-                    device=cfg.device, 
-                    gan_loss=cfg.gan_loss
+                    interpolant, discriminator, ot_sampler, data,
+                    gan_optimizer_G, gan_optimizer_D, interpolant_metric_prefix,
+                    curr_timesteps, seed, min_max, cfg
                 )
             else:
                 init_interpolant_from_checkpoint()
+
+            # Train CFM model using GAN interpolant
+            if cfg.train_cfm:
+                cfm_metric_prefix = f"{metric_prefix}_cfm"
+                wandb.define_metric(f"{cfm_metric_prefix}/*",
+                                    step_metric=f"{cfm_metric_prefix}_step")
+                train_ot_cfm(
+                    ot_cfm_model, ot_cfm_optimizer, interpolant, ot_sampler,
+                    data, cfm_metric_prefix, cfg, curr_timesteps, min_max,
+                )
+            else:
+                init_cfm_from_checkpoint()
             
             # Compute metrics for GAN interpolant
             x0 = data[0].to(cfg.device)
@@ -157,24 +160,6 @@ def train_ali(cfg):
                 denormalize(int_traj[100 * removed_t], min_max)
             )
             int_results[f"seed={seed}"].append(int_emd.item())
-
-            # Train CFM model using GAN interpolant
-            if cfg.train_cfm:
-                cfm_metric_prefix = f"{metric_prefix}_cfm"
-                wandb.define_metric(f"{cfm_metric_prefix}/*",
-                                    step_metric=f"{cfm_metric_prefix}_step")
-                train_ot_cfm(
-                    ot_cfm_model, ot_cfm_optimizer, 
-                    interpolant, ot_sampler,
-                    data, 
-                    cfg.batch_size, min_max, cfg.num_cfm_train_steps,
-                    metric_prefix=cfm_metric_prefix, 
-                    ot=cfg.cfm_ot,
-                    device=cfg.device, 
-                    times=curr_timesteps
-                )
-            else:
-                init_cfm_from_checkpoint()
 
             # Compute metrics for OT-CFM
             node = NeuralODE(
@@ -226,11 +211,23 @@ def train_ali(cfg):
 
     int_results = finish_results_table(int_results, timesteps_list[1: -1])
     cfm_results = finish_results_table(cfm_results, timesteps_list[1: -1])
-    int_results.to_csv(exp_path / 'int_results.csv', index=False)  
-    cfm_results.to_csv(exp_path / 'cfm_results.csv', index=False)  
 
-    wandb.log({"interpolant_results": wandb.Table(int_results)})
-    wandb.log({"cfm_results": wandb.Table(cfm_results)})
+    wandb.log({"interpolant_results": wandb.Table(dataframe=int_results)})
+    wandb.log({"cfm_results": wandb.Table(dataframe=cfm_results)})
+    
+    int_results.to_csv(f'{run.dir}/int_results.csv', index=False)  
+    cfm_results.to_csv(f'{run.dir}/cfm_results.csv', index=False)
+
+    interpolant_W2 = float(cfm_results['res'].values[-1].split('±')[0])
+    cfg_W2 = float(int_results['res'].values[-1].split('±')[0])
+    wandb.log({
+        'interpolant_W2': interpolant_W2,
+        'cfg_W2': cfg_W2
+    })
+
+    wandb.run.summary['interpolant_W2'] = interpolant_W2
+    wandb.run.summary['cfg_W2'] = cfg_W2
+    
     wandb.finish()
 
 

@@ -19,12 +19,50 @@ def compute_window_avg(array, window_size):
     return np.convolve(array, np.ones(window_size), mode='valid') / window_size
 
 
-def finish_results_table(table, timesteps):
-    table = pd.DataFrame(table)
-    table["mean"] = table.mean(axis=1)
-    table["std"] = table.std(axis=1)
-    table['timesteps'] = [f"{t=}" for t in timesteps]
-    table = table.round(4)
+# def finish_results_table(table, timesteps):
+#     table = pd.DataFrame(table)
+#     mean_row = [{
+#         name: val for name, val 
+#         in zip(table.columns, table.mean(axis=0))
+#     }]
+#     table = pd.concat(
+#         [table, pd.DataFrame(mean_row)], 
+#         ignore_index=True
+#     )
+    
+#     table["mean"] = table.mean(axis=1)
+#     table["std"] = table.std(axis=1)
+#     table['timesteps'] = [f"{t=}" for t in timesteps] + ["AVG"]
+
+#     return table.round(4)
+
+
+def finish_results_table(data, timesteps):
+    table = pd.DataFrame(
+        {'time': [f"{t=}" for t in timesteps] + ["means"]}
+    )
+    data = pd.DataFrame(data)
+    
+    mean_row = [{
+        name: val for name, val 
+        in zip(data.columns, data.mean(axis=0))
+    }]
+    data = pd.concat(
+        [data, pd.DataFrame(mean_row)], 
+        ignore_index=True
+    )
+    table = pd.concat(
+        [table, pd.DataFrame(data)], axis=1
+    )
+    
+    results = [
+        f"{round(avg, 3)}±{round(std, 3)}" for avg, std in 
+        zip(table.iloc[:, 1:].mean(axis=1), table.iloc[:, 1:].std(axis=1))
+    ]
+    results[:-1] = [''] * (len(results) - 1)
+    table["res"] = results
+
+    table = table.round(3).set_index(table.columns[0])
     return table
 
 

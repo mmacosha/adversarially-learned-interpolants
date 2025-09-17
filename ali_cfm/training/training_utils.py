@@ -72,17 +72,22 @@ def get_batch_for_cubic(FM, X, batch_size, timesteps, device='cpu'):
     return t, xt, ut
 
 
+def sample_x_batch(X, batch_size):
+    return X[np.random.randint(0, X.shape[0], size=batch_size)]
+
+
 def sample_x0_x1(X, batch_size, device='cpu'):
-    x0 = X[0][np.random.randint(X[0].shape[0], size=batch_size)].to(device)
-    x1 = X[-1][np.random.randint(X[-1].shape[0], size=batch_size)].to(device)
+    x0 = sample_x_batch(X[0], batch_size).to(device)
+    x1 = sample_x_batch(X[-1], batch_size).to(device)
     return x0, x1
 
 
 def sample_gan_batch(X, batch_size, ot_sampler, divisor,
                      time=None, ot='none', times=(0, 1, 2, 3)):
-    time = time or random.choice(times[1:-1])
     x0 = sample_x_batch(X[0], batch_size)
     x1 = sample_x_batch(X[-1], batch_size)
+
+    time = time or random.choice(times[1:-1])
     xt = sample_x_batch(X[time], batch_size)
     t = torch.ones(batch_size, 1) * time / divisor
 
@@ -101,8 +106,45 @@ def sample_gan_batch(X, batch_size, ot_sampler, divisor,
     return x0, x1, xt, t
 
 
-def sample_x_batch(X, batch_size):
-    return X[np.random.randint(0, X.shape[0], size=batch_size)]
+def sample_full_batch(
+        X, batch_size, ot_sampler, divisor, 
+        ot='none', 
+        times=(0, 1, 2, 3)
+    ):
+    x0 = sample_x_batch(X[0], batch_size)
+    x1 = sample_x_batch(X[-1], batch_size)
+
+    if ot in {"full", "mmot"}:
+        xts = [x0]
+        for t in times[1:]:
+            xt, xt_m_1 = sample_x_batch(X[t], batch_size), xts[-1]
+            xt_m_1, xt = sample_deterministic_ot_plan(xt_m_1, xt, ot_sampler)
+            xts.append(xt)
+        xts = {
+            t / divisor: xts[i] for i, t in enumerate(times)
+        }
+
+    elif ot == "border":
+        x0, x1 = ot_sampler.sample_plan(x0, x1)
+        xts = {
+            0: x0,
+            **{t / divisor: sample_x_batch(X[t], batch_size) for t in times[1:-1]},
+            times[-1] / divisor: x1
+        }
+
+    elif ot == 'none':
+        xts = {
+            0: x0,
+            **{t / divisor: sample_x_batch(X[t], batch_size) for t in times[1:-1]},
+            times[-1] / divisor: x1
+        }
+
+    else:
+        raise ValueError(f"Unknown OT type: {ot}")    
+
+    t = random.choice(times[1:-1]) / divisor
+
+    return xts, t
 
 
 def init_weights(m):
@@ -192,4 +234,3 @@ def init_interpolant_from_checkpoint(*args, **kwargs):
     raise NotImplementedError(
         "Interpolant checkpoint loading not implemented yet."
     )
-

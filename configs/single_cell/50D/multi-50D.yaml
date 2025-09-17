@@ -23,14 +23,18 @@ cfm_ot: mmot
 
 # training params
 batch_size: 128
-correct_coeff: 1.
+correct_coeff: 5e-8
 
 num_ali_pretrain_steps: 2001
 pretrain_lr: 1e-3
 
-reg_term_type: 'linear'
-num_t_steps: 10
-gan_loss: RpGAN
+reg_metric: 'land_norm'
+land_gamma: 0.2
+land_t_gamma: 0.1
+
+reg_term_type: '2nd_derivative'
+num_t_steps: 3
+gan_loss: R3GAN
 interpolant_gen_lr: 5e-5
 interpolant_disc_lr: 5e-5
 num_ali_train_steps: 70001
