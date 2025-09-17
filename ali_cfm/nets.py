@@ -1,5 +1,8 @@
+import random
+
 import torch
 import torch.nn as nn
+from numpy.matlib import randn
 from torch.func import jacrev, vmap
 
 
@@ -29,6 +32,20 @@ class Discriminator(torch.nn.Module):
             nn.Linear(in_dim, w), nn.ELU(),
             nn.Linear(w, w), nn.ELU(),
             nn.Linear(w, 1), nn.Sigmoid() if apply_sigmoid else nn.Identity()
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class DiscriminatorMNIST(torch.nn.Module):
+    def __init__(self, in_dim, w=64, apply_sigmoid: bool = True):
+        super().__init__()
+        self.apply_sigmoid = apply_sigmoid
+        self.net = torch.nn.Sequential(
+            nn.Linear(in_dim, 512), nn.LeakyReLU(),
+            nn.Linear(512, 256), nn.LeakyReLU(),
+            nn.Linear(256, 1), nn.Sigmoid() if apply_sigmoid else nn.Identity()
         )
 
     def forward(self, x):
@@ -122,9 +139,8 @@ class TrainableInterpolant(nn.Module):
         return (xt_linear - xt_interpolant).pow(2).mean()
 
     def compute_regression_term(self, x_hat, xt):
-        # return (x_hat - xt).pow(2).mean()
-        return torch.abs(x_hat - xt).mean()
-
+        return (x_hat - xt).pow(2).mean()
+        # return torch.abs(x_hat - xt).mean()  # no theoretical uniqueness guarantees
 
     def compute_linear_reg_term(self, x0, x1, t, xt):
         correction = xt - self.linear_interpolant(x0, x1, t)
@@ -154,7 +170,39 @@ class TrainableInterpolantMNIST(TrainableInterpolant):
     def __init__(self, dim, h_dim, t_smooth=0.01, time_varying=False, regulariser='linear'):
         super().__init__(dim=dim, h_dim=h_dim, t_smooth=t_smooth, time_varying=time_varying, regulariser=regulariser)
         # self.interpolant_net = RotationGenerator(dim=dim)
-        self.interpolant_net = RotationGenerator(dim=dim, latent_dim=64, hidden=1024)
+        self.interpolant_net = RemoveRotateNet(dim=dim, latent_dim=64, hidden=1024)
+
+    def compute_linear_reg_term(self, x0, x1, t, xt):
+        correction = xt - x0
+        batch_size = correction.shape[0]
+        if correction.ndim == 1:
+            reg_term = correction.pow(2)
+        else:
+            reg_term = correction.reshape(batch_size, -1).pow(2).sum(-1)
+        return reg_term.mean()
+
+    def compute_length_reg_term(self, x0, x1, num_t_steps=1, h=0.001):
+        def _interpolant(x, t):
+            xt = self.linear_interpolant(x, x, t)
+            input_ = torch.cat([x, t], dim=-1)
+            correction = self.interpolant_net(input_)
+            return xt + t * (1 - t) * correction
+
+        def estimate_second_derivative(x, t, h=0.001):
+            t_p_h, t_m_h = t + h, t - h
+            second_derivative = (
+                _interpolant(x, t_p_h) + _interpolant(x, t_m_h) - \
+                2 * _interpolant(x, t)
+            ) / h**2
+            return second_derivative
+
+        x = x0
+        integral = 0.0
+        for t in torch.linspace(0, 1, num_t_steps):
+            t = torch.ones(x0.shape[0], 1, device=x0.device) * t
+            second_derivative = estimate_second_derivative(x, t, h)
+            integral += second_derivative.pow(2).sum(-1)
+        return integral.mean()
 
     def forward(self, x0, x1, t, training=True):
         """
@@ -164,7 +212,9 @@ class TrainableInterpolantMNIST(TrainableInterpolant):
         if t.ndim == 1:
             t = t[:, None]  # (B,1)
 
-        xt = self.linear_interpolant(x0, x1, t)
+        x = x0
+
+        xt = self.linear_interpolant(x, x, t)
 
         if training and self.t_smooth > 0:
             t_input = t + torch.randn_like(t) * self.t_smooth
@@ -172,36 +222,67 @@ class TrainableInterpolantMNIST(TrainableInterpolant):
         else:
             t_input = t
 
-        input_ = torch.cat([x0, x1, t_input], dim=-1)
+        input_ = torch.cat([x, t_input], dim=-1)
 
         correction = self.interpolant_net(input_)
 
         return xt + (t * (1 - t)) * correction
 
+    def dI_dt(self, x0, x1, t):
+        t = t[..., None] if t.ndim == 1 else t
+
+        def _interpolnet(x0i, ti):
+            input_ = torch.cat([x0i, ti], dim=0).unsqueeze(0)
+            out = self.interpolant_net(input_)
+            return out, out
+
+        (corr_jac, corr_output) = vmap(
+            jacrev(_interpolnet, argnums=1, has_aux=True))(x0, t)
+        return (
+            (1 - 2 * t) * corr_output.squeeze() +
+            t * (1 - t) * corr_jac.squeeze()
+        )
+
+
+# class RotationGenerator(nn.Module):
+#     def __init__(self, dim, latent_dim=64, hidden=1024):
+#         super().__init__()
+#
+#         # Encode input digit (x0, flattened 784)
+#         self.enc = nn.Sequential(
+#             nn.Linear(dim, hidden), nn.ReLU(),
+#             nn.Linear(hidden, hidden), nn.ReLU(),
+#             nn.Linear(hidden, latent_dim), nn.ReLU()
+#         )
+#
+#         # Combine digit encoding + theta encoding
+#         in_dim = 2 * latent_dim
+#         self.mlp = nn.Sequential(
+#             nn.Linear(in_dim, hidden), nn.ReLU(),
+#             nn.Linear(hidden, hidden), nn.ReLU(),
+#             nn.Linear(hidden, dim), nn.Tanh()
+#         )
+#
+#         self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=latent_dim)
 
 class RotationGenerator(nn.Module):
     def __init__(self, dim, latent_dim=64, hidden=1024):
         super().__init__()
 
         # Encode input digit (x0, flattened 784)
-        self.enc = nn.Sequential(
-            nn.Linear(dim, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, latent_dim), nn.ReLU()
-        )
-
-        # Combine digit encoding + theta encoding
-        in_dim = 2 * latent_dim
         self.mlp = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.ReLU(),
+            nn.Linear(dim + latent_dim, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, dim)
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, dim), nn.Tanh()
         )
 
-        # self.theta_net = nn.Sequential(
-        #     nn.Linear(1, 64), nn.ReLU(),
-        #     nn.Linear(64, 64), nn.ReLU(),
-        #     nn.Linear(64, 1)
+        # # Combine digit encoding + theta encoding
+        # in_dim = 2 * latent_dim
+        # self.mlp = nn.Sequential(
+        #     nn.Linear(in_dim, hidden), nn.ReLU(),
+        #     nn.Linear(hidden, hidden), nn.ReLU(),
+        #     nn.Linear(hidden, dim), nn.Tanh()
         # )
 
         self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=latent_dim)
@@ -211,15 +292,47 @@ class RotationGenerator(nn.Module):
         x0: (B,784) flattened MNIST image
         theta: (B,1) rotation angle (in radians or normalized [0,1])
         """
-        dim = (input_.shape[-1] - 1) // 2
-        x0, x1, t = input_[..., :dim], input_[..., dim:2 * dim], input_[..., -1:]
+        x, t = input_[..., :-1], input_[..., -1:]
         # theta = self.theta_net(t) * torch.pi  # t * 360 / 180 * torch.pi
-        theta = self.t_embed(t)  # (B, latent_dim)
+        theta = self.t_embed(t) * torch.pi # (B, latent_dim)
 
-        z_x = self.enc(x0)  # (B, latent_dim)
-        z = torch.cat([z_x, theta], dim=-1)
+        z = torch.cat([x, theta], dim=-1)
         out = self.mlp(z)  # (B,784)
-        return out
+        # return 4 * out - x / (t * (1 - t) + 1)
+        return 4 * out
+
+
+class RemoveRotateNet(nn.Module):
+    def __init__(self, dim, latent_dim=64, hidden=1024):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(dim + latent_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, dim), nn.Sigmoid()
+        )
+        self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=latent_dim)
+        self.theta_net = nn.Linear(latent_dim, 1)
+
+    def forward(self, input_):
+        x, t = input_[..., :-1], input_[..., -1:]
+        z_theta = self.t_embed(t) * torch.pi
+
+        z = torch.cat([x, z_theta], dim=-1)
+        out = self.mlp(z)  # (B, 784)
+
+        theta = self.theta_net(z_theta)  # (B,1)
+        cos_a, sin_a = torch.cos(theta), torch.sin(theta)
+
+        # build 2×3 affine rotation matrix per batch
+        rot = torch.zeros(x.size(0), 2, 3, device=x.device, dtype=x.dtype)
+        rot[:, 0, 0], rot[:, 0, 1] = cos_a.squeeze(), -sin_a.squeeze()
+        rot[:, 1, 0], rot[:, 1, 1] = sin_a.squeeze(), cos_a.squeeze()
+
+        x_img = x.view(-1, 1, 16, 16)
+        grid = torch.nn.functional.affine_grid(rot, size=x_img.size(), align_corners=False)
+        x_rot = torch.nn.functional.grid_sample(x_img, grid, align_corners=False).view(-1, 16 ** 2)
+        return -4 * out + x_rot
 
 
 class RotationCFM(nn.Module):
@@ -384,7 +497,7 @@ class UNetCFM(nn.Module):
         inp = inp.view(inp.shape[0], 1, int(inp.shape[1] ** 0.5), int(inp.shape[1] ** 0.5))
         B, _, H, W = inp.shape
 
-        te = self.t_embed(t)  # (B, t_emb_dim)
+        te = self.t_embed(t) * torch.pi  # (B, t_emb_dim)
 
         e1 = self.enc1(inp); e1 = self.film1(e1, te)
         x  = self.down(e1)
