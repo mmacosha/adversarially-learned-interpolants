@@ -142,10 +142,11 @@ def get_dataset(
         _, X = create_dataset(3, B=10, test=True)
 
     elif name == "ST":
-        df_u2 = pd.read_csv('../data/ST_images/aligned_spots/U2_tumor_coordinates.csv')
-        df_u3 = pd.read_csv('../data/ST_images/aligned_spots/U3_tumor_coordinates.csv')
-        df_u4 = pd.read_csv('../data/ST_images/aligned_spots/U4_tumor_coordinates.csv')
-        df_u5 = pd.read_csv('../data/ST_images/aligned_spots/U5_tumor_coordinates.csv')
+        ST_img_path = "/Users/oskarkviman/Documents/phd/mixture_FM_loss/data/ST_images"
+        df_u2 = pd.read_csv(f'{ST_img_path}/aligned_spots/U2_tumor_coordinates.csv')
+        df_u3 = pd.read_csv(f'{ST_img_path}/aligned_spots/U3_tumor_coordinates.csv')
+        df_u4 = pd.read_csv(f'{ST_img_path}/aligned_spots/U4_tumor_coordinates.csv')
+        df_u5 = pd.read_csv(f'{ST_img_path}/aligned_spots/U5_tumor_coordinates.csv')
 
         X0 = np.array(df_u2.iloc[:, -2:].values, dtype=np.float32)
         Xt1 = np.array(df_u3.iloc[:, -2:].values, dtype=np.float32)
