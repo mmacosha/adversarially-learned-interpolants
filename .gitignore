@@ -22,3 +22,7 @@ data/MNIST/
 lightning_logs/
 
 results/
+
+cell_tracking/data/
+
+cell_tracking/exports/

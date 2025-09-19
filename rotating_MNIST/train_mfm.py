@@ -2,8 +2,9 @@ import argparse
 import os
 import random
 import sys
+import time
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional, Sequence, Tuple, Union
@@ -16,6 +17,11 @@ from torch import nn
 from torch.optim import Adam
 from torchdyn.core import NeuralODE
 from tqdm.auto import trange
+
+try:
+    import wandb
+except ImportError:  # pragma: no cover
+    wandb = None
 
 
 # Ensure the external Metric Flow Matching repo is importable when running the script directly.
@@ -109,6 +115,7 @@ class TrainConfig:
     verbose: bool = False
     save_plot: Optional[str] = None
     skip_eval: bool = False
+    pair_sample_size: Optional[int] = None
 
     cell_stack_path: Optional[str] = None
     cell_test_stack_path: Optional[str] = None
@@ -124,10 +131,13 @@ class TrainConfig:
 
     mnist_unet_base: int = 32
     mnist_interpolant_hidden: int = 512
-    mnist_interpolant_hidden: int = 512
     cell_flow_width: int = 128
     cell_interpolant_hidden: int = 512
-    
+
+    use_wandb: bool = True
+    wandb_project: str = "mixture-fmls"
+    wandb_entity: str = "mixtures-all-the-way"
+    wandb_name: Optional[str] = "nicola_mfm_celltrack"
 
 def _sample_batches(
     per_timestep_data: Sequence[torch.Tensor],
@@ -154,8 +164,8 @@ def train_geopath(
     ot_sampler: Optional[OTPlanSampler],
     data_metric: DataManifoldMetric,
     log_shapes: bool = False,
+    pair_sample_size: Optional[int] = None,
 ) -> float:
-    flow_matcher.train()
     geopath_net: nn.Module = flow_matcher.geopath_net
     geopath_net.train()
 
@@ -169,7 +179,13 @@ def train_geopath(
 
         velocities: List[torch.Tensor] = []
 
-        for i in range(len(data) - 1):
+        num_pairs = len(data) - 1
+        if pair_sample_size is not None and pair_sample_size < num_pairs:
+            pair_indices = torch.randperm(num_pairs, device=data[0].device)[:pair_sample_size]
+        else:
+            pair_indices = torch.arange(num_pairs, device=data[0].device)
+
+        for i in pair_indices.cpu().tolist():
             x0 = main_batch[i]
             x1 = main_batch[i + 1]
 
@@ -225,8 +241,8 @@ def train_flow(
     batch_size: int,
     ot_sampler: Optional[OTPlanSampler],
     log_shapes: bool = False,
+    pair_sample_size: Optional[int] = None,
 ) -> float:
-    flow_matcher.train()
     flow_net.train()
 
     total_loss = 0.0
@@ -238,7 +254,13 @@ def train_flow(
 
         ts, xts, uts = [], [], []
 
-        for i in range(len(data) - 1):
+        num_pairs = len(data) - 1
+        if pair_sample_size is not None and pair_sample_size < num_pairs:
+            pair_indices = torch.randperm(num_pairs, device=data[0].device)[:pair_sample_size]
+        else:
+            pair_indices = torch.arange(num_pairs, device=data[0].device)
+
+        for i in pair_indices.cpu().tolist():
             x0 = main_batch[i]
             x1 = main_batch[i + 1]
 
@@ -271,7 +293,13 @@ def train_flow(
         xt_batch = torch.cat(xts, dim=0)
         ut_batch = torch.cat(uts, dim=0)
 
-        vt = flow_net(t_batch, xt_batch)
+        try:
+            vt = flow_net(t_batch, xt_batch)
+        except TypeError:
+            tb = t_batch
+            if tb.dim() == 1:
+                tb = tb[:, None]
+            vt = flow_net(torch.cat([xt_batch, tb], dim=-1))
         loss = torch.mean((vt - ut_batch) ** 2)
         loss.backward()
         optimizer.step()
@@ -290,6 +318,26 @@ class FlowMLPWrapper(nn.Module):
         if t.dim() == 1:
             t = t[:, None]
         return self.model(torch.cat([x, t], dim=-1))
+
+
+class FlowAdapter(nn.Module):
+    def __init__(self, base: nn.Module):
+        super().__init__()
+        self.base = base
+
+    def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        tb = t
+        if tb.dim() == 0:
+            tb = tb.unsqueeze(0)
+        if tb.dim() == 1:
+            tb = tb.unsqueeze(-1)
+        if tb.shape[0] != x.shape[0]:
+            tb = tb.expand(x.shape[0], -1)
+
+        argcount = self.base.forward.__code__.co_argcount
+        if argcount >= 3:
+            return self.base(tb, x)
+        return self.base(torch.cat([x, tb], dim=-1))
 
 
 def load_cell_tracking_stack(
@@ -352,194 +400,262 @@ def main(cfg: TrainConfig) -> None:
         print(f"[warn] failed to use device '{cfg.device}': {exc}. Falling back to CPU.")
         device = torch.device("cpu")
 
-    dataset_name = cfg.dataset.lower()
-    if dataset_name == "rotating_mnist":
-        data, min_max = get_dataset(
-            "RotatingMNIST_train", cfg.n_data_dims, normalize=cfg.normalize_dataset
-        )
-        test_data, _ = get_dataset(
-            "RotatingMNIST_test", cfg.n_data_dims, normalize=cfg.normalize_dataset
-        )
-    elif dataset_name == "cell_tracking":
-        if cfg.cell_stack_path is None:
-            raise ValueError(
-                "--cell-stack-path must be provided when using dataset='cell_tracking'"
+    wandb_run = None
+    try:
+        if cfg.use_wandb:
+            if wandb is None:
+                raise ImportError(
+                    "wandb is not installed but use_wandb=True. Install wandb or run with --no-wandb"
+                )
+            default_name = f"mfm_{cfg.dataset}_{int(time.time())}"
+            wandb_run = wandb.init(
+                project=cfg.wandb_project,
+                entity=cfg.wandb_entity,
+                name=cfg.wandb_name or default_name,
+                config=asdict(cfg),
             )
-        data, min_max = load_cell_tracking_stack(
-            cfg.cell_stack_path,
-            subset_size=cfg.cell_subset_size,
-            seed=cfg.cell_subset_seed,
-            normalize=cfg.normalize_dataset,
-        )
-        if cfg.cell_test_stack_path:
-            test_data, _ = load_cell_tracking_stack(
-                cfg.cell_test_stack_path,
+
+        dataset_name = cfg.dataset.lower()
+        if dataset_name == "rotating_mnist":
+            data, min_max = get_dataset(
+                "RotatingMNIST_train", cfg.n_data_dims, normalize=cfg.normalize_dataset
+            )
+            test_data, _ = get_dataset(
+                "RotatingMNIST_test", cfg.n_data_dims, normalize=cfg.normalize_dataset
+            )
+        elif dataset_name == "cell_tracking":
+            if cfg.cell_stack_path is None:
+                raise ValueError(
+                    "--cell-stack-path must be provided when using dataset='cell_tracking'"
+                )
+            data, min_max = load_cell_tracking_stack(
+                cfg.cell_stack_path,
                 subset_size=cfg.cell_subset_size,
                 seed=cfg.cell_subset_seed,
                 normalize=cfg.normalize_dataset,
             )
-        else:
-            test_data = [frame.clone() for frame in data]
-    else:
-        raise ValueError(f"Unknown dataset '{cfg.dataset}'")
-    
-    print("Using dataset: ", cfg.dataset)
-
-    data = [x.to(device).float() for x in data]
-    test_data = [x.to(device).float() for x in test_data]
-
-    times = torch.linspace(0.0, 1.0, len(data), device=device)
-    dim = data[0].shape[1]
-
-    print(
-        f"Loaded {cfg.dataset} with {len(data)} timesteps; "
-        f"min batch {min(x.shape[0] for x in data)}; feature dim {dim}"
-    )
-    for idx, frame in enumerate(data):
-        print(f"  train t={idx}: {tuple(frame.shape)}")
-
-    ot_sampler = None
-    if cfg.ot_method is not None and cfg.ot_method.lower() != "none":
-        ot_sampler = OTPlanSampler(method=cfg.ot_method)
-
-    metric_args = SimpleNamespace(
-        gamma_current=cfg.gamma,
-        rho=cfg.rho,
-        velocity_metric=cfg.velocity_metric,
-        n_centers=cfg.metric_n_centers,
-        kappa=cfg.metric_kappa,
-        metric_epochs=cfg.metric_epochs,
-        metric_patience=cfg.metric_patience,
-        metric_lr=cfg.metric_lr,
-        alpha_metric=cfg.alpha_metric,
-        data_type="trajectory",
-        accelerator="cpu",
-    )
-    
-    data_metric = DataManifoldMetric(args=metric_args, skipped_time_points=None, datamodule=None)
-
-    for seed in cfg.seed_list:
-        fix_seed(seed)
-
-        if dataset_name == "rotating_mnist":
-            geopath_net = TrainableInterpolantMNIST(
-                dim=dim,
-                h_dim=cfg.mnist_interpolant_hidden,
-                t_smooth=0.0,
-                time_varying=True,
-                regulariser="linear",
-            ).to(device)
-            flow_base = cfg.mnist_unet_base
-            flow_net = CorrectionUNet(in_ch=2, base=flow_base, interpolant=False).to(device)
-        else:
-            geopath_net = TrainableInterpolant(
-                dim=dim,
-                h_dim=cfg.cell_interpolant_hidden,
-                t_smooth=0.0,
-                time_varying=True,
-                regulariser="linear",
-            ).to(device)
-
-            flow_net = FlowMLPWrapper(
-                dim=dim,
-                width=cfg.cell_flow_width,
-            ).to(device)
-
-        flow_matcher = MetricFlowMatcher(
-            geopath_net=geopath_net,
-            alpha=float(cfg.alpha),
-            sigma=float(cfg.sigma),
-        )
-
-        geopath_optimizer = Adam(
-            geopath_net.parameters(),
-            lr=cfg.geopath_lr,
-        )
-
-        total_geopath_steps = cfg.geopath_epochs * cfg.geopath_steps_per_epoch
-        geopath_loss = None
-        if total_geopath_steps > 0 and len(list(geopath_net.parameters())) > 0:
-            geopath_loss = train_geopath(
-                flow_matcher,
-                geopath_optimizer,
-                data,
-                times,
-                cfg.gamma,
-                cfg.rho,
-                cfg.metric_batch_size,
-                total_geopath_steps,
-                cfg.batch_size,
-                ot_sampler,
-                data_metric,
-                log_shapes=cfg.verbose,
-            )
-            print(f"[seed={seed}] GeoPath loss: {geopath_loss:.6f}")
-
-        for param in geopath_net.parameters():
-            param.requires_grad_(False)
-        geopath_net.eval()
-
-        flow_optimizer = Adam(flow_net.parameters(), lr=cfg.flow_lr)
-
-        total_flow_steps = cfg.flow_epochs * cfg.flow_steps_per_epoch
-        flow_loss = None
-        if total_flow_steps > 0:
-            flow_loss = train_flow(
-                flow_matcher,
-                flow_net,
-                flow_optimizer,
-                data,
-                times,
-                total_flow_steps,
-                cfg.batch_size,
-                ot_sampler,
-                log_shapes=cfg.verbose,
-            )
-            print(f"[seed={seed}] Flow loss: {flow_loss:.6f}")
-
-        if cfg.skip_eval:
-            continue
-
-        flow_wrapper = flow_model_torch_wrapper(flow_net).to(device)
-        node = NeuralODE(flow_wrapper, solver="dopri5", sensitivity="adjoint").to(device)
-
-        t_eval = torch.linspace(0, 1, cfg.eval_num_timepoints, device=device)
-        X0 = test_data[0]
-
-        with torch.no_grad():
-            traj = node.trajectory(denormalize(X0, min_max), t_span=t_eval)
-
-        if dataset_name == "rotating_mnist":
-            img_dim = int(np.sqrt(dim))
-            fig, axes = plt.subplots(2, len(test_data) - 1, figsize=(20, 4))
-            for i in range(1, len(test_data)):
-                t_target = times[i]
-                idx = torch.argmin(torch.abs(t_eval - t_target)).item()
-                pred = traj[idx].float().to(device)
-                target = denormalize(test_data[i], min_max).to(device)
-                emd_val = float(compute_emd(target, pred, device=device))
-                axes[0, i - 1].imshow(pred[0].view(img_dim, img_dim).cpu(), cmap="gray")
-                axes[0, i - 1].set_title(f"t={360 * t_target.item():.0f}°, EMD={emd_val:.3f}")
-                axes[0, i - 1].axis("off")
-                axes[1, i - 1].imshow(target[0].view(img_dim, img_dim).cpu(), cmap="gray")
-                axes[1, i - 1].axis("off")
-        else:
-            fig, axes = plt.subplots(2, len(test_data) - 1, figsize=(14, 6))
-            for i in range(1, len(test_data)):
-                t_target = times[i]
-                idx = torch.argmin(torch.abs(t_eval - t_target)).item()
-                pred = traj[idx].float().to(device)
-                target = denormalize(test_data[i], min_max).to(device)
-                emd_val = float(compute_emd(target, pred, device=device))
-                plot_cell_samples(
-                    axes[0, i - 1], pred, f"t={t_target.item():.2f}, EMD={emd_val:.3f}"
+            if cfg.cell_test_stack_path:
+                test_data, _ = load_cell_tracking_stack(
+                    cfg.cell_test_stack_path,
+                    subset_size=cfg.cell_subset_size,
+                    seed=cfg.cell_subset_seed,
+                    normalize=cfg.normalize_dataset,
                 )
-                plot_cell_samples(axes[1, i - 1], target, "target")
+            else:
+                test_data = [frame.clone() for frame in data]
+        else:
+            raise ValueError(f"Unknown dataset '{cfg.dataset}'")
 
-        plt.tight_layout()
-        if cfg.save_plot:
-            fig.savefig(cfg.save_plot, dpi=200)
-        plt.close(fig)
+        print("Using dataset: ", cfg.dataset)
+
+        data = [x.to(device).float() for x in data]
+        test_data = [x.to(device).float() for x in test_data]
+
+        times = torch.linspace(0.0, 1.0, len(data), device=device)
+        dim = data[0].shape[1]
+        min_batch = min(x.shape[0] for x in data)
+
+        print(
+            f"Loaded {cfg.dataset} with {len(data)} timesteps; "
+            f"min batch {min_batch}; feature dim {dim}"
+        )
+        if cfg.verbose:
+            for idx, frame in enumerate(data):
+                print(f"  train t={idx}: {tuple(frame.shape)}")
+
+        if wandb_run:
+            wandb_run.log({
+                "data/num_timesteps": len(data),
+                "data/min_batch": min_batch,
+                "data/feature_dim": dim,
+            })
+
+        ot_sampler = None
+        if cfg.ot_method is not None and cfg.ot_method.lower() != "none":
+            ot_sampler = OTPlanSampler(method=cfg.ot_method)
+
+        metric_args = SimpleNamespace(
+            gamma_current=cfg.gamma,
+            rho=cfg.rho,
+            velocity_metric=cfg.velocity_metric,
+            n_centers=cfg.metric_n_centers,
+            kappa=cfg.metric_kappa,
+            metric_epochs=cfg.metric_epochs,
+            metric_patience=cfg.metric_patience,
+            metric_lr=cfg.metric_lr,
+            alpha_metric=cfg.alpha_metric,
+            data_type="trajectory",
+            accelerator="cpu",
+        )
+
+        data_metric = DataManifoldMetric(
+            args=metric_args, skipped_time_points=None, datamodule=None
+        )
+
+        for seed in cfg.seed_list:
+            fix_seed(seed)
+
+            if dataset_name == "rotating_mnist":
+                geopath_net = TrainableInterpolantMNIST(
+                    dim=dim,
+                    h_dim=cfg.mnist_interpolant_hidden,
+                    t_smooth=0.0,
+                    time_varying=True,
+                    regulariser="linear",
+                ).to(device)
+                setattr(geopath_net, "time_geopath", True)
+                flow_base = cfg.mnist_unet_base
+                flow_net = CorrectionUNet(
+                    in_ch=2, base=flow_base, interpolant=False
+                ).to(device)
+            else:
+                geopath_net = TrainableInterpolant(
+                    dim=dim,
+                    h_dim=cfg.cell_interpolant_hidden,
+                    t_smooth=0.0,
+                    time_varying=True,
+                    regulariser="linear",
+                ).to(device)
+                setattr(geopath_net, "time_geopath", True)
+
+                flow_net = FlowMLPWrapper(
+                    dim=dim,
+                    width=cfg.cell_flow_width,
+                ).to(device)
+
+            flow_matcher = MetricFlowMatcher(
+                geopath_net=geopath_net,
+                alpha=float(cfg.alpha),
+                sigma=float(cfg.sigma),
+            )
+
+            geopath_optimizer = Adam(
+                geopath_net.parameters(),
+                lr=cfg.geopath_lr,
+            )
+
+            total_geopath_steps = cfg.geopath_epochs * cfg.geopath_steps_per_epoch
+            geopath_loss = None
+            if total_geopath_steps > 0 and len(list(geopath_net.parameters())) > 0:
+                geopath_loss = train_geopath(
+                    flow_matcher,
+                    geopath_optimizer,
+                    data,
+                    times,
+                    cfg.gamma,
+                    cfg.rho,
+                    cfg.metric_batch_size,
+                    total_geopath_steps,
+                    cfg.batch_size,
+                    ot_sampler,
+                    data_metric,
+                    log_shapes=cfg.verbose,
+                    pair_sample_size=cfg.pair_sample_size,
+                )
+                print(f"[seed={seed}] GeoPath loss: {geopath_loss:.6f}")
+                if wandb_run and geopath_loss is not None:
+                    wandb_run.log({
+                        "train/geopath_loss": geopath_loss,
+                        "train/seed": seed,
+                    })
+
+            for param in geopath_net.parameters():
+                param.requires_grad_(False)
+            geopath_net.eval()
+
+            flow_optimizer = Adam(flow_net.parameters(), lr=cfg.flow_lr)
+
+            total_flow_steps = cfg.flow_epochs * cfg.flow_steps_per_epoch
+            flow_loss = None
+            if total_flow_steps > 0:
+                flow_loss = train_flow(
+                    flow_matcher,
+                    flow_net,
+                    flow_optimizer,
+                    data,
+                    times,
+                    total_flow_steps,
+                    cfg.batch_size,
+                    ot_sampler,
+                    log_shapes=cfg.verbose,
+                    pair_sample_size=cfg.pair_sample_size,
+                )
+                print(f"[seed={seed}] Flow loss: {flow_loss:.6f}")
+                if wandb_run and flow_loss is not None:
+                    wandb_run.log({
+                        "train/flow_loss": flow_loss,
+                        "train/seed": seed,
+                    })
+
+            if cfg.skip_eval:
+                continue
+
+            flow_wrapper = flow_model_torch_wrapper(FlowAdapter(flow_net)).to(device)
+            node = NeuralODE(
+                flow_wrapper, solver="dopri5", sensitivity="adjoint"
+            ).to(device)
+
+            t_eval = torch.linspace(0, 1, cfg.eval_num_timepoints, device=device)
+            X0 = test_data[0]
+
+            with torch.no_grad():
+                traj = node.trajectory(denormalize(X0, min_max), t_span=t_eval)
+
+            emd_values: List[float] = []
+            if dataset_name == "rotating_mnist":
+                img_dim = int(np.sqrt(dim))
+                fig, axes = plt.subplots(2, len(test_data) - 1, figsize=(20, 4))
+                for i in range(1, len(test_data)):
+                    t_target = times[i]
+                    idx = torch.argmin(torch.abs(t_eval - t_target)).item()
+                    pred = traj[idx].float().to(device)
+                    target = denormalize(test_data[i], min_max).to(device)
+                    emd_val = float(compute_emd(target, pred, device=device))
+                    emd_values.append(emd_val)
+                    axes[0, i - 1].imshow(
+                        pred[0].view(img_dim, img_dim).cpu(), cmap="gray"
+                    )
+                    axes[0, i - 1].set_title(
+                        f"t={360 * t_target.item():.0f}°, EMD={emd_val:.3f}"
+                    )
+                    axes[0, i - 1].axis("off")
+                    axes[1, i - 1].imshow(
+                        target[0].view(img_dim, img_dim).cpu(), cmap="gray"
+                    )
+                    axes[1, i - 1].axis("off")
+            else:
+                fig, axes = plt.subplots(2, len(test_data) - 1, figsize=(14, 6))
+                for i in range(1, len(test_data)):
+                    t_target = times[i]
+                    idx = torch.argmin(torch.abs(t_eval - t_target)).item()
+                    pred = traj[idx].float().to(device)
+                    target = denormalize(test_data[i], min_max).to(device)
+                    emd_val = float(compute_emd(target, pred, device=device))
+                    emd_values.append(emd_val)
+                    plot_cell_samples(
+                        axes[0, i - 1],
+                        pred,
+                        f"t={t_target.item():.2f}, EMD={emd_val:.3f}",
+                    )
+                    plot_cell_samples(axes[1, i - 1], target, "target")
+
+            plt.tight_layout()
+            if wandb_run:
+                wandb_run.log({"eval/figure": wandb.Image(fig)})
+            if cfg.save_plot:
+                fig.savefig(cfg.save_plot, dpi=200)
+
+            plt.close(fig)
+
+            if wandb_run and emd_values:
+                wandb_run.log({
+                    "eval/emd_mean": float(np.mean(emd_values)),
+                    "eval/emd_std": float(np.std(emd_values)),
+                    "eval/seed": seed,
+                })
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 def parse_config() -> TrainConfig:
@@ -577,14 +693,15 @@ def parse_config() -> TrainConfig:
     parser.add_argument("--cell-test-stack-path", type=str, default=None, help="Optional test stack for evaluation")
     parser.add_argument("--cell-subset-size", type=int, default=None, help="Random subset size per timestep for cell data")
     parser.add_argument("--cell-subset-seed", type=int, default=None, help="Random seed for cell subsampling")
+    parser.add_argument("--pair-sample-size", type=int, default=None, help="Number of consecutive time pairs to use per optimization step")
     parser.add_argument("--mnist-unet-base", type=int, default=None, help="Base channel count for MNIST UNet models")
     parser.add_argument("--mnist-interpolant-hidden", type=int, default=None, help="Hidden width for TrainableInterpolantMNIST")
-    parser.add_argument("--mnist-interpolant-t-smooth", type=float, default=None, help="t_smooth for TrainableInterpolantMNIST")
-    parser.add_argument("--mnist-interpolant-regulariser", type=str, default=None, help="Regulariser for TrainableInterpolantMNIST")
     parser.add_argument("--cell-flow-width", type=int, default=None, help="Hidden width for cell-tracking flow MLP")
     parser.add_argument("--cell-interpolant-hidden", type=int, default=None, help="Hidden width for cell-tracking interpolant")
-    parser.add_argument("--cell-interpolant-t-smooth", type=float, default=None, help="t_smooth for cell-tracking interpolant")
-    parser.add_argument("--cell-interpolant-regulariser", type=str, default=None, help="Regulariser for cell-tracking interpolant")
+    parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument("--wandb-name", type=str, default=None, help="wandb run name")
+    parser.add_argument("--wandb-project", type=str, default=None, help="wandb project name")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="wandb entity")
     parser.set_defaults(normalize_dataset=cfg.normalize_dataset)
 
     args = parser.parse_args()
@@ -651,18 +768,20 @@ def parse_config() -> TrainConfig:
         cfg.mnist_unet_base = args.mnist_unet_base
     if args.mnist_interpolant_hidden is not None:
         cfg.mnist_interpolant_hidden = args.mnist_interpolant_hidden
-    if args.mnist_interpolant_t_smooth is not None:
-        cfg.mnist_interpolant_t_smooth = args.mnist_interpolant_t_smooth
-    if args.mnist_interpolant_regulariser is not None:
-        cfg.mnist_interpolant_regulariser = args.mnist_interpolant_regulariser
     if args.cell_flow_width is not None:
         cfg.cell_flow_width = args.cell_flow_width
     if args.cell_interpolant_hidden is not None:
         cfg.cell_interpolant_hidden = args.cell_interpolant_hidden
-    if args.cell_interpolant_t_smooth is not None:
-        cfg.cell_interpolant_t_smooth = args.cell_interpolant_t_smooth
-    if args.cell_interpolant_regulariser is not None:
-        cfg.cell_interpolant_regulariser = args.cell_interpolant_regulariser
+    if args.pair_sample_size is not None:
+        cfg.pair_sample_size = args.pair_sample_size
+    if args.no_wandb:
+        cfg.use_wandb = False
+    if args.wandb_name is not None:
+        cfg.wandb_name = args.wandb_name
+    if args.wandb_project is not None:
+        cfg.wandb_project = args.wandb_project
+    if args.wandb_entity is not None:
+        cfg.wandb_entity = args.wandb_entity
     return cfg
 
 
