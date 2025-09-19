@@ -6,19 +6,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from torchcfm import OTPlanSampler
 
+from ali_cfm.data_utils import denormalize
 
-def load_data(scale_factor, device):
-    df_u2 = pd.read_csv('../data/ST_images/aligned_spots/U2_tumor_coordinates.csv')
-    df_u3 = pd.read_csv('../data/ST_images/aligned_spots/U3_tumor_coordinates.csv')
-    df_u4 = pd.read_csv('../data/ST_images/aligned_spots/U4_tumor_coordinates.csv')
-    df_u5 = pd.read_csv('../data/ST_images/aligned_spots/U5_tumor_coordinates.csv')
-
-    X0 = T.tensor(df_u2.iloc[:, -2:].values, dtype=T.float32,
-                  device=device) / scale_factor  # scale down to stabilize training
-    Xt1 = T.tensor(df_u3.iloc[:, -2:].values, dtype=T.float32, device=device) / scale_factor
-    Xt2 = T.tensor(df_u4.iloc[:, -2:].values, dtype=T.float32, device=device) / scale_factor
-    X1 = T.tensor(df_u5.iloc[:, -2:].values, dtype=T.float32, device=device) / scale_factor
-    return X0, Xt1, Xt2, X1
 
 def sample_interm_4_slides(bs, t, x_t1, x_t2):
     n_spots_t1 = x_t1.shape[0]
@@ -85,13 +74,37 @@ class Plotter(object):
         x = s_t[:, 1] * self.coordinate_scaling
         y = s_t[:, 0] * self.coordinate_scaling
         ax.scatter(x, y, alpha=0.2, color='red')
-        ax.set_title(f""
-                     f"{self.slide_names[slide]}" +
-                     " (Observed;" * observed +
-                     " (Unobserved;" * (1 - observed) +
-                     f" t = {t})"
-                     )
+        #ax.set_title(f""
+        #             f"{self.slide_names[slide]}" +
+        #             " (Observed;" * observed +
+        #             " (Unobserved;" * (1 - observed) +
+        #             f" t = {t})"
+        #             )
         ax.axis("off")
+
+    def plot_fn(self, interpolant, epoch, seed, t_max, data, ot_sampler, device, metric_prefix, train_timesteps, wandb, min_max):
+        fig, axes = plt.subplots(2, 4, figsize=(24, 12))
+        x0 = denormalize(data[0], min_max)
+        x1 = denormalize(data[-1], min_max)
+        N = x0.shape[0]
+        for slide, s_t in enumerate(data):
+            self.overlay_spot_coordinates(s_t.to('cpu'), slide, axes[0, slide], data[slide])
+
+            t = self.time_stamps[slide]
+            t = T.ones(N, dtype=T.float32, device=x0.device) * t
+            t = t.unsqueeze(-1)
+            if isinstance(interpolant, list):
+                xt_fake = interpolant[slide]
+            else:
+                with T.no_grad():
+                    xt_fake = interpolant(x0, x1, t)
+            self.overlay_spot_coordinates(xt_fake.to('cpu'), slide, axes[1, slide], observed_list[slide])
+        plt.tight_layout()
+        if wandb is not None:
+            wandb.log({f"{metric_prefix}/interpolants": wandb.Image(fig), f"{metric_prefix}_step": epoch})
+            plt.close(fig)
+        else:
+            plt.show()
 
     def plot_interpolants(self, interpolant, X, observed_list, mmot_interpolants=None):
         # if plotting mmot-based interpolants, like cubic splines, OT-CFM or MFM, input a list of interpolants
@@ -247,8 +260,9 @@ def mmot_couple_marginals(X0, X1, Xt, otplan):
 
 
 if __name__ == '__main__':
-    X = load_data(scale_factor=100, device='cpu')
-    pl = Plotter("/home/oskar/phd/interpolnet/Mixture-FMLs/data/ST_images/ref_U5_warped_images",
-                 [0, 0.25, 0.75, 1])
-    pl.plot_data(X)
+    pass
+    # X = load_data(scale_factor=100, device='cpu')
+    # pl = Plotter("/home/oskar/phd/interpolnet/Mixture-FMLs/data/ST_images/ref_U5_warped_images",
+    #              [0, 0.25, 0.75, 1])
+    # pl.plot_data(X)
 

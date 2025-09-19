@@ -1,6 +1,12 @@
 # logs and packages
 wandb/
+logs/
+checkpoints/
+training_visualizations/
+*.png
+.matplotlib_cache/
 env/
+external/
 
 # Python aux files
 *.DS_Store
@@ -11,3 +17,8 @@ env/
 
 # data folders
 data/single_cell/
+data/MNIST/
+
+lightning_logs/
+
+results/

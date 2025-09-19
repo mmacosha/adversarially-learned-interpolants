@@ -1,0 +1,41 @@
+lr_D: 1e-3
+lr_G: 1e-3
+lr_CFM: 1e-3
+
+dataset: ST
+whiten: false
+normalise: true
+
+seed_list: [42]
+n_data_dims: 2
+normalize_dataset: True
+wandb_name: ali_cfm
+wandb_mode: online
+dims: 2
+device: mps
+
+batch_size: 128
+correct_coeff: 1.
+
+pretrain_lr: 1e-3
+n_pretrain_epochs: 0
+net_hidden: 128
+
+t_smooth: 0.01
+interpolant_ot: border
+cfm_ot: border
+pretain_ot: full
+
+n_epochs: 70_001
+use_pca: false
+num_int_steps_per_timestep: 100
+
+gan_loss: vanilla
+
+train_cfm: True
+train_interpolants: True
+
+# hudra params
+hydra:
+  run:
+    dir: .
