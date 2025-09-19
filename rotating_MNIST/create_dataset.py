@@ -62,9 +62,9 @@ def create_dataset(digit=0, B=500, seed=42, test=False):
             angle = t * 360
             processed = []
             for img in chunk:
-                img_proc = base_transform(img)
-                img_rot = TF.rotate(img_proc, angle=angle)
-                img_np = np.array(img_rot) / 255.0  # Normalize to [0, 1]
+                img = TF.rotate(img, angle=angle)
+                img = base_transform(img)
+                img_np = 2 * (np.array(img) / 255.0) - 1  # Normalize to [-1, 1]
                 processed.append(img_np.reshape(img_np.shape[1] ** 2))
             arrays.append(np.stack(processed))
         return arrays

@@ -11,24 +11,26 @@ n_data_dims: 2
 normalize_dataset: True
 wandb_name: ali_cfm
 wandb_mode: online
-dims: 2
-device: mps
+dim: 2
+device: cuda:0
 
 batch_size: 128
-correct_coeff: 1.
+correct_coeff: 10.
 
 pretrain_lr: 1e-3
-n_pretrain_epochs: 0
+n_pretrain_epochs: 5_001
 net_hidden: 128
 
 t_smooth: 0.01
-interpolant_ot: border
+interpolant_ot: mmot
 cfm_ot: border
 pretain_ot: full
 
 n_epochs: 70_001
+n_ot_cfm_epochs: 10_001
 use_pca: false
 num_int_steps_per_timestep: 100
+regulariser: regression
 
 gan_loss: vanilla
 

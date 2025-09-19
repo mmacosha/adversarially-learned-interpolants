@@ -12,7 +12,7 @@ def pretain_interpolant(
         interpolant, pretrain_optimizer_G, ot_sampler, 
         train_data, n_pretrain_epochs, gan_batch_size, 
         train_timesteps, 
-        ot='none', metric_prefix="", device='cpu'
+        ot='none', metric_prefix="", device='cpu', mnist=False
     ):
     if n_pretrain_epochs == 0:
         return
@@ -30,7 +30,10 @@ def pretain_interpolant(
         x0, x1, xt, t = (x.to(device) for x in batch)
         xt_fake = interpolant(x0, x1, t)
 
-        loss = (xt_fake - xt).pow(2).mean()
+        if mnist:
+            loss = (xt_fake - xt).abs().mean()
+        else:
+            loss = (xt_fake - xt).pow(2).mean()
         loss.backward()
 
         pretrain_optimizer_G.step()
@@ -160,6 +163,8 @@ def train_interpolant_with_gan(
             f"{metric_prefix}/reg_weight_loss": reg_weight_loss.item(),
             f"{metric_prefix}/fake_proba": fake_proba.mean().item(),
             f"{metric_prefix}/real_proba": real_proba.mean().item(),
+            f"{metric_prefix}/sig_fake_proba": torch.nn.functional.sigmoid(fake_proba).mean().item(),
+            f"{metric_prefix}/sig_real_proba": torch.nn.functional.sigmoid(real_proba).mean().item(),
             f"{metric_prefix}_step": epoch
         })
 

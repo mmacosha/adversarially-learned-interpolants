@@ -22,7 +22,7 @@ from ali_cfm.data_utils import get_dataset, denormalize, denormalize_gradfield
 from mnist_utils import plot_fn
 
 
-from ali_cfm.nets import Discriminator, MLP, TrainableInterpolantMNIST, RotationCFM, CorrectionUNet, DiscriminatorMNIST
+from ali_cfm.nets import Discriminator, TrainableInterpolantMNIST, CFMNet, DiscriminatorMNIST, RotationCFM
 
 
 def fix_seed(seed: int = 42):
@@ -36,11 +36,18 @@ def fix_seed(seed: int = 42):
     torch.backends.cudnn.benchmark = False
 
 
+def sobel_xy(img):  # img: (B,1,H,W)
+    kx = torch.tensor([[-1,0,1],[-2,0,2],[-1,0,1]], device=img.device, dtype=img.dtype).view(1,1,3,3)/8
+    ky = torch.tensor([[-1,-2,-1],[0,0,0],[1,2,1]], device=img.device, dtype=img.dtype).view(1,1,3,3)/8
+    gx = torch.nn.functional.conv2d(img, kx, padding=1); gy = torch.nn.functional.conv2d(img, ky, padding=1)
+    return gx, gy
+
+
 def train_ot_cfm(
         ot_cfm_model, ot_cfm_optimizer, interpolant,
          ot_sampler, train_data, batch_size, min_max,
          n_ot_cfm_epochs,
-         metric_prefix="", ot='border', device='cpu', times=(0, -1)
+         metric_prefix="", ot='border', device='cpu', times=(0, -1), viz_every=1000
     ):
     for step in trange(n_ot_cfm_epochs,
                        desc="Training OT CFM Interpolant", leave=False):
@@ -51,13 +58,18 @@ def train_ot_cfm(
             x0, x1 = ot_sampler.sample_plan(x0, x1)
 
         t = torch.rand(x0.shape[0], 1, device=device)
+        t = torch.clamp(t, 0.001, 1.0 - 0.01)
 
         xt = interpolant(x0, x1, t, training=False).detach()
         ut = interpolant.dI_dt(x0, x1, t).detach()
 
         vt = ot_cfm_model(torch.cat([xt, t], dim=-1))
 
-        loss = torch.mean((vt - ut) ** 2)
+        Ix, Iy = sobel_xy(xt.view(-1, 1, 16, 16))
+        w = (Ix.pow(2) + Iy.pow(2)).sqrt().clamp_min(1e-3).view_as(vt).detach()
+        loss = (w * (vt - ut)).pow(2).mean() / (w.mean() + 1e-8)
+
+        # loss = torch.mean((vt - ut) ** 2)
         loss.backward()
         ot_cfm_optimizer.step()
 
@@ -65,6 +77,26 @@ def train_ot_cfm(
             f"{metric_prefix}/cfm_loss": loss.item(),
             f"{metric_prefix}_cfm_step": step
         })
+        # --- Visual probe every viz_every steps ---
+        if step % viz_every == 0:
+            with torch.no_grad():
+                B = min(4, xt.shape[0])
+                imgs = xt[:B].cpu().view(B, 16, 16)  # input
+                tgt = ut[:B].cpu().view(B, 16, 16)  # target
+                pred = vt[:B].cpu().view(B, 16, 16)  # predicted
+                err = (pred - tgt).cpu().view(B, 16, 16)
+
+                fig, axes = plt.subplots(B, 4, figsize=(8, 2 * B))
+                for i in range(B):
+                    for j, arr in enumerate([imgs[i], tgt[i], pred[i], err[i]]):
+                        ax = axes[i, j]
+                        im = ax.imshow(arr.numpy(), cmap="gray")
+                        ax.axis("off")
+                        if i == 0:
+                            ax.set_title(["x_t", "target dI/dt", "pred vθ", "error"][j])
+                plt.tight_layout()
+                wandb.log({f"{metric_prefix}/cfm_probe": wandb.Image(fig)})
+                plt.close(fig)
 
 
 # @hydra.main(config_path="./configs", config_name="ali")
@@ -111,20 +143,21 @@ def train_ali(cfg):
         gan_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=cfg.lr_G)
         gan_optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=cfg.lr_D)
 
-        ot_cfm_model = CorrectionUNet().to(cfg.device)
+        ot_cfm_model = RotationCFM(cfg.dim).to(cfg.device)
         ot_cfm_optimizer = torch.optim.Adam(ot_cfm_model.parameters(), cfg.lr_CFM)
 
         if cfg.train_interpolants:
             # Pretrain interpolant
-            pretain_metric_prefix = f"{metric_prefix}_pretrain"
-            wandb.define_metric(f"{pretain_metric_prefix}/*",
-                                step_metric=f"{pretain_metric_prefix}_step")
-            pretain_interpolant(
-                interpolant, pretrain_optimizer_G, ot_sampler, data,
-                cfg.n_pretrain_epochs, cfg.batch_size, curr_timesteps,
-                ot=cfg.pretain_ot, metric_prefix=pretain_metric_prefix,
-                device=cfg.device, mnist=True
-            )
+            if cfg.n_pretrain_epochs > 0:
+                pretain_metric_prefix = f"{metric_prefix}_pretrain"
+                wandb.define_metric(f"{pretain_metric_prefix}/*",
+                                    step_metric=f"{pretain_metric_prefix}_step")
+                pretain_interpolant(
+                    interpolant, pretrain_optimizer_G, ot_sampler, data,
+                    cfg.n_pretrain_epochs, cfg.batch_size, curr_timesteps,
+                    ot=cfg.pretain_ot, metric_prefix=pretain_metric_prefix,
+                    device=cfg.device, mnist=True
+                )
 
             # Train interpolant with GAN
             interpolant_metric_prefix = f"{metric_prefix}_interpolant"
@@ -151,7 +184,7 @@ def train_ali(cfg):
             torch.save(checkpoint, save_path)
         else:
             PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/rotating_MNIST/wandb/"
-                    "run-20250917_115754-60eroxr9/files/checkpoints")
+                    "run-20250919_112624-gcvh356b/files/checkpoints")
             load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
             interpolant.load_state_dict(load_checkpoint['interpolant'])
 
@@ -165,7 +198,7 @@ def train_ali(cfg):
                                 step_metric=f"{cfm_metric_prefix}_step")
             train_ot_cfm(
                 ot_cfm_model, ot_cfm_optimizer, interpolant, ot_sampler,
-                data, 128, min_max, cfg.n_ot_cfm_epochs,
+                data, cfg.batch_size, min_max, cfg.n_ot_cfm_epochs,
                 metric_prefix=cfm_metric_prefix, ot=cfg.cfm_ot,
                 device=cfg.device, times=curr_timesteps
             )
@@ -181,7 +214,7 @@ def train_ali(cfg):
             torch.save(checkpoint, save_path)
         else:
             PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/rotating_MNIST/wandb"
-                    "/run-20250915_155452-15yae40c/files/checkpoints")
+                    "/run-20250919_134235-agse3txs/files/checkpoints")
             load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
             ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
@@ -195,26 +228,33 @@ def train_ali(cfg):
         timesteps_list_test = [t for t in range(len(test_data))]
 
         X0 = torch.tensor(test_data[0], dtype=torch.float32).to(cfg.device)
-        t_s = torch.linspace(0, 1, 101)
+        # t_s = torch.linspace(0, 1, 101)
+        t_s = torch.tensor(timesteps_list_test, device=cfg.device, dtype=torch.float32) / max(timesteps_list_test)
         with torch.no_grad():
             cfm_traj = node.trajectory(X0,
                                        t_s
                                        )
 
         img_dim = int(np.sqrt(cfg.dim))
-        fig, ax = plt.subplots(1, len(timesteps_list_test) - 1, figsize=(20, 3))
-        for i, t in enumerate(timesteps_list_test[1:]):
-            cfm_t = torch.argmin(torch.abs(t_s - t / max(timesteps_list_test)))
+        fig, ax = plt.subplots(1 + 4, len(timesteps_list_test), figsize=(20, 10))
+        for i, t in enumerate(timesteps_list_test):
+            cfm_t = t  # torch.argmin(torch.abs(t_s - t / max(timesteps_list_test)))
             cfm_emd = compute_emd(
                 denormalize(test_data[t], min_max).to(cfg.device),
                 cfm_traj[cfm_t].float().to(cfg.device),
             )
 
+            t_in = torch.tensor(t / max(timesteps_list_test), device=cfg.device).view(1, 1).expand(X0.shape[0], 1)
+            xt = interpolant(X0, X0, t_in, training=False).detach()
 
-            ax[i].imshow(cfm_traj[cfm_t][0].reshape(img_dim, img_dim).cpu(), cmap='gray')
-            ax[i].set_title(f"t={360 * (t / max(timesteps_list_test)):.0f}°")
-            ax[i].axis('off')
+            ax[0, i].imshow(cfm_traj[cfm_t][0].reshape(img_dim, img_dim).cpu(), cmap='gray')
+            ax[0, i].set_title(f"t={360 * (t / max(timesteps_list_test)):.0f}°")
+            ax[0, i].axis('off')
             cfm_results[f"seed={seed}"].append(cfm_emd.item())
+
+            for j in range(1, ax.shape[0]):
+                ax[j, i].imshow(xt[j].reshape(img_dim, img_dim).cpu(), cmap='gray')
+                ax[j, i].axis('off')
 
             wandb.log({
                 f"{metric_prefix}_cfm/cfm_result_t={t}": cfm_emd.item()
