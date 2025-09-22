@@ -7,7 +7,7 @@ import warnings
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Any, List, Optional, Sequence, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -115,7 +115,6 @@ class TrainConfig:
     verbose: bool = False
     save_plot: Optional[str] = None
     skip_eval: bool = False
-    pair_sample_size: Optional[int] = None
 
     cell_stack_path: Optional[str] = None
     cell_test_stack_path: Optional[str] = None
@@ -139,16 +138,37 @@ class TrainConfig:
     wandb_entity: str = "mixtures-all-the-way"
     wandb_name: Optional[str] = "nicola_mfm_celltrack"
 
-def _sample_batches(
-    per_timestep_data: Sequence[torch.Tensor],
+    save_checkpoints: bool = True
+    checkpoint_dir: Optional[str] = None
+
+def _sample_endpoint_pairs(
+    start: torch.Tensor,
+    end: torch.Tensor,
     batch_size: int,
-) -> List[torch.Tensor]:
-    device = per_timestep_data[0].device
-    batches = []
-    for tensor in per_timestep_data:
-        idx = torch.randint(0, tensor.shape[0], (batch_size,), device=device)
-        batches.append(tensor.index_select(0, idx))
-    return batches
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Sample batches from the first and last timesteps for endpoint-only training."""
+    if start.device != end.device:
+        raise ValueError("Start and end tensors must share the same device")
+    if start.shape[0] == 0 or end.shape[0] == 0:
+        raise ValueError("Endpoint tensors must contain at least one sample")
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    replace_start = batch_size > start.shape[0]
+    replace_end = batch_size > end.shape[0]
+
+    if replace_start:
+        idx_start = torch.randint(0, start.shape[0], (batch_size,), device=start.device)
+    else:
+        idx_start = torch.randperm(start.shape[0], device=start.device)[:batch_size]
+
+    if replace_end:
+        idx_end = torch.randint(0, end.shape[0], (batch_size,), device=end.device)
+    else:
+        idx_end = torch.randperm(end.shape[0], device=end.device)[:batch_size]
+
+    return start.index_select(0, idx_start), end.index_select(0, idx_end)
 
 
 def train_geopath(
@@ -158,75 +178,83 @@ def train_geopath(
     times: torch.Tensor,
     gamma: float,
     rho: float,
-    metric_batch_size: int,
     steps: int,
     batch_size: int,
     ot_sampler: Optional[OTPlanSampler],
     data_metric: DataManifoldMetric,
+    *,
+    metric_samples: torch.Tensor,
     log_shapes: bool = False,
-    pair_sample_size: Optional[int] = None,
+    wandb_run: Optional[Any] = None,
+    log_interval: int = 500,
+    seed: Optional[int] = None,
 ) -> float:
     geopath_net: nn.Module = flow_matcher.geopath_net
     geopath_net.train()
 
-    total_loss = 0.0
+    if len(data) < 2:
+        raise ValueError("GeoPath training requires at least two timesteps of data")
 
-    for _ in trange(steps, desc="Training GeoPath", leave=False):
+    total_loss = 0.0
+    start_data = data[0]
+    end_data = data[-1]
+    t_min = times[0]
+    t_max = times[-1]
+    metric_samples = metric_samples.detach()
+
+    for step_idx in trange(steps, desc="Training GeoPath", leave=False):
         optimizer.zero_grad()
 
-        main_batch = _sample_batches(data, batch_size)
-        metric_batch = _sample_batches(data, metric_batch_size)
+        x0, x1 = _sample_endpoint_pairs(start_data, end_data, batch_size)
 
-        velocities: List[torch.Tensor] = []
+        if ot_sampler is not None:
+            x0, x1 = ot_sampler.sample_plan(x0, x1, replace=True)
 
-        num_pairs = len(data) - 1
-        if pair_sample_size is not None and pair_sample_size < num_pairs:
-            pair_indices = torch.randperm(num_pairs, device=data[0].device)[:pair_sample_size]
-        else:
-            pair_indices = torch.arange(num_pairs, device=data[0].device)
+        t, xt, ut = flow_matcher.sample_location_and_conditional_flow(
+            x0,
+            x1,
+            t_min,
+            t_max,
+            training_geopath_net=True,
+        )
 
-        for i in pair_indices.cpu().tolist():
-            x0 = main_batch[i]
-            x1 = main_batch[i + 1]
-
-            metric_samples = torch.cat([metric_batch[i], metric_batch[i + 1]], dim=0)
-
-            if ot_sampler is not None:
-                x0, x1 = ot_sampler.sample_plan(x0, x1, replace=True)
-
-            t_min = times[i]
-            t_max = times[i + 1]
-            t, xt, ut = flow_matcher.sample_location_and_conditional_flow(
-                x0,
-                x1,
-                t_min,
-                t_max,
-                training_geopath_net=True,
+        if log_shapes and step_idx == 0:
+            print(
+                "[GeoPath] pair 0 ->",
+                len(data) - 1,
+                "| x0",
+                tuple(x0.shape),
+                "x1",
+                tuple(x1.shape),
+                "xt",
+                tuple(xt.shape),
+                "ut",
+                tuple(ut.shape),
+                "metric",
+                tuple(metric_samples.shape),
             )
 
-            if log_shapes:
-                print(
-                    "[GeoPath] pair", i,
-                    "| x0", tuple(x0.shape),
-                    "x1", tuple(x1.shape),
-                    "xt", tuple(xt.shape),
-                    "ut", tuple(ut.shape),
-                    "metric", tuple(metric_samples.shape),
-                )
+        velocity = data_metric.calculate_velocity(
+            xt,
+            ut,
+            metric_samples,
+            timestep=0, # doesn't matter for land metric 
+        )
 
-            vel = data_metric.calculate_velocity(
-                xt,
-                ut,
-                metric_samples,
-                timestep=i,
-            )
-            velocities.append(vel)
-
-        loss = torch.mean(torch.cat(velocities) ** 2)
+        loss = torch.mean(velocity ** 2)
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
+
+        if wandb_run and (step_idx == 0 or (step_idx + 1) % max(1, log_interval) == 0):
+            log_payload = {
+                "train/geopath_loss_step": float(loss.item()),
+                "train/geopath_step": step_idx + 1,
+            }
+            if seed is not None:
+                log_payload["train/seed"] = seed
+            wandb_run.log(log_payload)
 
     return total_loss / max(1, steps)
 
@@ -240,58 +268,54 @@ def train_flow(
     steps: int,
     batch_size: int,
     ot_sampler: Optional[OTPlanSampler],
+    *,
     log_shapes: bool = False,
-    pair_sample_size: Optional[int] = None,
+    wandb_run: Optional[Any] = None,
+    log_interval: int = 500,
+    seed: Optional[int] = None,
 ) -> float:
     flow_net.train()
 
     total_loss = 0.0
+    if len(data) < 2:
+        raise ValueError("Flow training requires at least two timesteps of data")
 
-    for _ in trange(steps, desc="Training Flow", leave=False):
+    for step_idx in trange(steps, desc="Training Flow", leave=False):
         optimizer.zero_grad()
 
-        main_batch = _sample_batches(data, batch_size)
+        x0, x1 = _sample_endpoint_pairs(data[0], data[-1], batch_size)
 
-        ts, xts, uts = [], [], []
+        if ot_sampler is not None:
+            x0, x1 = ot_sampler.sample_plan(x0, x1, replace=True)
 
-        num_pairs = len(data) - 1
-        if pair_sample_size is not None and pair_sample_size < num_pairs:
-            pair_indices = torch.randperm(num_pairs, device=data[0].device)[:pair_sample_size]
-        else:
-            pair_indices = torch.arange(num_pairs, device=data[0].device)
+        t_min = times[0]
+        t_max = times[-1]
+        t, xt, ut = flow_matcher.sample_location_and_conditional_flow(
+            x0,
+            x1,
+            t_min,
+            t_max,
+        )
 
-        for i in pair_indices.cpu().tolist():
-            x0 = main_batch[i]
-            x1 = main_batch[i + 1]
-
-            if ot_sampler is not None:
-                x0, x1 = ot_sampler.sample_plan(x0, x1, replace=True)
-
-            t_min = times[i]
-            t_max = times[i + 1]
-            t, xt, ut = flow_matcher.sample_location_and_conditional_flow(
-                x0,
-                x1,
-                t_min,
-                t_max,
+        if log_shapes and step_idx == 0:
+            print(
+                "[Flow ] pair 0 ->",
+                len(data) - 1,
+                "| x0",
+                tuple(x0.shape),
+                "x1",
+                tuple(x1.shape),
+                "xt",
+                tuple(xt.shape),
+                "ut",
+                tuple(ut.shape),
             )
 
-            if log_shapes and not ts:
-                print(
-                    "[Flow ] pair", i,
-                    "| x0", tuple(x0.shape),
-                    "x1", tuple(x1.shape),
-                    "xt", tuple(xt.shape),
-                    "ut", tuple(ut.shape),
-                )
-
-            ts.append(t[:, None])
-            xts.append(xt)
-            uts.append(ut)
-
-        t_batch = torch.cat(ts, dim=0)
-        xt_batch = torch.cat(xts, dim=0)
-        ut_batch = torch.cat(uts, dim=0)
+        t_batch = t
+        if t_batch.dim() == 1:
+            t_batch = t_batch[:, None]
+        xt_batch = xt
+        ut_batch = ut
 
         try:
             vt = flow_net(t_batch, xt_batch)
@@ -305,6 +329,15 @@ def train_flow(
         optimizer.step()
 
         total_loss += loss.item()
+
+        if wandb_run and (step_idx == 0 or (step_idx + 1) % max(1, log_interval) == 0):
+            log_payload = {
+                "train/flow_loss_step": float(loss.item()),
+                "train/flow_step": step_idx + 1,
+            }
+            if seed is not None:
+                log_payload["train/seed"] = seed
+            wandb_run.log(log_payload)
 
     return total_loss / max(1, steps)
 
@@ -381,12 +414,198 @@ def load_cell_tracking_stack(
     return frames, (min_, max_)
 
 
-def plot_cell_samples(ax, samples: torch.Tensor, title: str) -> None:
+def _scatter_cell_points(
+    ax,
+    samples: torch.Tensor,
+    *,
+    color: str,
+    marker_size: float,
+    alpha: float,
+    label: Optional[str] = None,
+) -> None:
     pts = samples.detach().cpu().numpy()
-    ax.scatter(pts[:, 0], pts[:, 1], s=6, alpha=0.7)
+    ax.scatter(
+        pts[:, 0],
+        pts[:, 1],
+        s=marker_size,
+        alpha=alpha,
+        c=color,
+        edgecolors="none",
+        label=label,
+    )
+
+
+def plot_cell_samples(
+    ax,
+    samples: torch.Tensor,
+    title: str,
+    *,
+    color: str = "#1f77b4",
+    label: Optional[str] = None,
+    marker_size: float = 10.0,
+    alpha: float = 0.85,
+    bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+) -> None:
+    _scatter_cell_points(
+        ax,
+        samples,
+        color=color,
+        marker_size=marker_size,
+        alpha=alpha,
+        label=label,
+    )
+    if bounds is not None:
+        (min_xy, max_xy) = bounds
+        ax.set_xlim(min_xy[0], max_xy[0])
+        ax.set_ylim(min_xy[1], max_xy[1])
+        ax.invert_yaxis()
     ax.set_title(title)
     ax.set_aspect("equal")
-    ax.axis("off")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    if label is not None:
+        ax.legend(loc="upper right", frameon=False, handlelength=1.0, fontsize="small")
+
+
+def plot_cell_overlay(
+    ax,
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    title: str,
+    *,
+    bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    show_legend: bool = False,
+    marker_size: float = 10.0,
+    alpha_target: float = 0.4,
+    alpha_pred: float = 0.6,
+    color: Optional[str] = None,
+) -> None:
+    _scatter_cell_points(
+        ax,
+        target,
+        color="#d62728" if color is None else color,
+        marker_size=marker_size,
+        alpha=alpha_target,
+        label="target" if show_legend else None,
+    )
+    _scatter_cell_points(
+        ax,
+        prediction,
+        color="#1f77b4" if color is None else color,
+        marker_size=marker_size,
+        alpha=alpha_pred,
+        label="prediction" if show_legend else None,
+    )
+    if bounds is not None:
+        (min_xy, max_xy) = bounds
+        ax.set_xlim(min_xy[0], max_xy[0])
+        ax.set_ylim(min_xy[1], max_xy[1])
+        ax.invert_yaxis()
+    ax.set_title(title)
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    if show_legend:
+        ax.legend(loc="upper right", frameon=False, handlelength=1.0, fontsize="small")
+
+
+def plot_cell_trajectories(
+    ax,
+    trajectories: torch.Tensor,
+    times: torch.Tensor,
+    *,
+    bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    cmap_name: str = "viridis",
+    marker_size: float = 8.0,
+    line_width: float = 1.2,
+) -> None:
+    traj = trajectories.detach().cpu().numpy()  # (T, N, 2)
+    num_steps, num_points, _ = traj.shape
+    cmap = plt.get_cmap(cmap_name)
+    colors = cmap(np.linspace(0.0, 1.0, num_points))
+
+    for idx in range(num_points):
+        path = traj[:, idx]
+        ax.plot(
+            path[:, 0],
+            path[:, 1],
+            color=colors[idx],
+            linewidth=line_width,
+            alpha=0.9,
+        )
+        ax.scatter(
+            path[:, 0],
+            path[:, 1],
+            s=marker_size,
+            color=colors[idx],
+            alpha=0.9,
+        )
+
+    if bounds is not None:
+        (min_xy, max_xy) = bounds
+        ax.set_xlim(min_xy[0], max_xy[0])
+        ax.set_ylim(min_xy[1], max_xy[1])
+    ax.invert_yaxis()
+    ax.set_title("Flow trajectories")
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+
+def plot_cell_trajectories_3d(
+    ax,
+    trajectories: torch.Tensor,
+    times: torch.Tensor,
+    *,
+    cmap_name: str = "viridis",
+    elev: float = 30.0,
+    azim: float = -60.0,
+) -> None:
+    traj = trajectories.detach().cpu().numpy()  # (T, N, 2)
+    times_np = times.detach().cpu().numpy()      # (T,)
+    num_steps, num_points, _ = traj.shape
+
+    xs = traj[:, :, 0].reshape(-1)
+    ys = traj[:, :, 1].reshape(-1)
+    ts = np.repeat(times_np, num_points)
+    cmap = plt.get_cmap(cmap_name)
+    norm = plt.Normalize(vmin=ts.min(), vmax=ts.max())
+    colors = cmap(norm(ts))
+
+    ax.scatter(xs, ys, ts, c=colors, s=14.0, alpha=0.9, linewidths=0)
+
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("t")
+    ax.set_title("Flow trajectories (3D)")
+    ax.view_init(elev=elev, azim=azim)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, pad=0.10, fraction=0.04, label="t")
+
+
+def _save_model_checkpoint(
+    directory: Path,
+    prefix: str,
+    seed: int,
+    geopath_net: nn.Module,
+    flow_net: nn.Module,
+    cfg: TrainConfig,
+    times: torch.Tensor,
+    min_max: Optional[Tuple[torch.Tensor, torch.Tensor]],
+) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    ckpt_path = directory / f"{prefix}_seed{seed}.pt"
+    payload = {
+        "geopath": geopath_net.state_dict(),
+        "flow": flow_net.state_dict(),
+        "config": asdict(cfg),
+        "times": times.detach().cpu(),
+    }
+    if min_max is not None:
+        payload["min_max"] = (min_max[0].detach().cpu(), min_max[1].detach().cpu())
+    torch.save(payload, ckpt_path)
+    return ckpt_path
 
 
 def main(cfg: TrainConfig) -> None:
@@ -399,6 +618,14 @@ def main(cfg: TrainConfig) -> None:
     except Exception as exc:
         print(f"[warn] failed to use device '{cfg.device}': {exc}. Falling back to CPU.")
         device = torch.device("cpu")
+
+    if cfg.verbose:
+        print(
+            f"Config: batch_size={cfg.batch_size}, metric_batch_size={cfg.metric_batch_size}, "
+            f"geopath_steps={cfg.geopath_steps_per_epoch}, geopath_epochs={cfg.geopath_epochs}, "
+            f"flow_steps={cfg.flow_steps_per_epoch}, flow_epochs={cfg.flow_epochs}, "
+            f"geopath_lr={cfg.geopath_lr}, flow_lr={cfg.flow_lr}, seeds={list(cfg.seed_list)}"
+        )
 
     wandb_run = None
     try:
@@ -451,6 +678,13 @@ def main(cfg: TrainConfig) -> None:
         data = [x.to(device).float() for x in data]
         test_data = [x.to(device).float() for x in test_data]
 
+        train_shapes = [tuple(x.shape) for x in data]
+        test_shapes = [tuple(x.shape) for x in test_data]
+        print(f"Train frame shapes: {train_shapes[:5]}{' ...' if len(train_shapes) > 5 else ''}")
+        print(f"Test frame shapes:  {test_shapes[:5]}{' ...' if len(test_shapes) > 5 else ''}")
+        metric_samples_full = torch.cat(data, dim=0)
+        
+
         times = torch.linspace(0.0, 1.0, len(data), device=device)
         dim = data[0].shape[1]
         min_batch = min(x.shape[0] for x in data)
@@ -462,6 +696,12 @@ def main(cfg: TrainConfig) -> None:
         if cfg.verbose:
             for idx, frame in enumerate(data):
                 print(f"  train t={idx}: {tuple(frame.shape)}")
+
+        if cfg.batch_size > min_batch:
+            print(
+                f"[info] Reducing batch size from {cfg.batch_size} to {min_batch} to match available samples"
+            )
+            cfg.batch_size = min_batch
 
         if wandb_run:
             wandb_run.log({
@@ -523,11 +763,27 @@ def main(cfg: TrainConfig) -> None:
                     width=cfg.cell_flow_width,
                 ).to(device)
 
+            if cfg.verbose:
+                print(
+                    f"[debug] geopath params={sum(p.numel() for p in geopath_net.parameters())}, "
+                    f"flow params={sum(p.numel() for p in flow_net.parameters())}"
+                )
+
+            if cfg.verbose:
+                num_geo_params = sum(p.numel() for p in geopath_net.parameters())
+                num_flow_params = sum(p.numel() for p in flow_net.parameters())
+                print(f"GeoPath parameters: {num_geo_params}")
+                print(f"Flow parameters: {num_flow_params}")
+
             flow_matcher = MetricFlowMatcher(
                 geopath_net=geopath_net,
                 alpha=float(cfg.alpha),
                 sigma=float(cfg.sigma),
             )
+
+            if cfg.verbose:
+                num_geo_params = sum(p.numel() for p in geopath_net.parameters())
+                print(f"[debug] number of GeoPath parameters = {num_geo_params}")
 
             geopath_optimizer = Adam(
                 geopath_net.parameters(),
@@ -537,6 +793,10 @@ def main(cfg: TrainConfig) -> None:
             total_geopath_steps = cfg.geopath_epochs * cfg.geopath_steps_per_epoch
             geopath_loss = None
             if total_geopath_steps > 0 and len(list(geopath_net.parameters())) > 0:
+                if cfg.verbose:
+                    print(
+                        f"[debug] Starting GeoPath training for {total_geopath_steps} steps (batch={cfg.batch_size})"
+                    )
                 geopath_loss = train_geopath(
                     flow_matcher,
                     geopath_optimizer,
@@ -544,13 +804,14 @@ def main(cfg: TrainConfig) -> None:
                     times,
                     cfg.gamma,
                     cfg.rho,
-                    cfg.metric_batch_size,
                     total_geopath_steps,
                     cfg.batch_size,
                     ot_sampler,
                     data_metric,
+                    metric_samples=metric_samples_full,
                     log_shapes=cfg.verbose,
-                    pair_sample_size=cfg.pair_sample_size,
+                    wandb_run=wandb_run,
+                    seed=seed,
                 )
                 print(f"[seed={seed}] GeoPath loss: {geopath_loss:.6f}")
                 if wandb_run and geopath_loss is not None:
@@ -568,6 +829,10 @@ def main(cfg: TrainConfig) -> None:
             total_flow_steps = cfg.flow_epochs * cfg.flow_steps_per_epoch
             flow_loss = None
             if total_flow_steps > 0:
+                if cfg.verbose:
+                    print(
+                        f"[debug] Starting flow training for {total_flow_steps} steps (batch={cfg.batch_size})"
+                    )
                 flow_loss = train_flow(
                     flow_matcher,
                     flow_net,
@@ -578,7 +843,8 @@ def main(cfg: TrainConfig) -> None:
                     cfg.batch_size,
                     ot_sampler,
                     log_shapes=cfg.verbose,
-                    pair_sample_size=cfg.pair_sample_size,
+                    wandb_run=wandb_run,
+                    seed=seed,
                 )
                 print(f"[seed={seed}] Flow loss: {flow_loss:.6f}")
                 if wandb_run and flow_loss is not None:
@@ -602,50 +868,46 @@ def main(cfg: TrainConfig) -> None:
                 traj = node.trajectory(denormalize(X0, min_max), t_span=t_eval)
 
             emd_values: List[float] = []
-            if dataset_name == "rotating_mnist":
-                img_dim = int(np.sqrt(dim))
-                fig, axes = plt.subplots(2, len(test_data) - 1, figsize=(20, 4))
-                for i in range(1, len(test_data)):
-                    t_target = times[i]
-                    idx = torch.argmin(torch.abs(t_eval - t_target)).item()
-                    pred = traj[idx].float().to(device)
-                    target = denormalize(test_data[i], min_max).to(device)
-                    emd_val = float(compute_emd(target, pred, device=device))
-                    emd_values.append(emd_val)
-                    axes[0, i - 1].imshow(
-                        pred[0].view(img_dim, img_dim).cpu(), cmap="gray"
-                    )
-                    axes[0, i - 1].set_title(
-                        f"t={360 * t_target.item():.0f}°, EMD={emd_val:.3f}"
-                    )
-                    axes[0, i - 1].axis("off")
-                    axes[1, i - 1].imshow(
-                        target[0].view(img_dim, img_dim).cpu(), cmap="gray"
-                    )
-                    axes[1, i - 1].axis("off")
-            else:
-                fig, axes = plt.subplots(2, len(test_data) - 1, figsize=(14, 6))
-                for i in range(1, len(test_data)):
-                    t_target = times[i]
-                    idx = torch.argmin(torch.abs(t_eval - t_target)).item()
-                    pred = traj[idx].float().to(device)
-                    target = denormalize(test_data[i], min_max).to(device)
-                    emd_val = float(compute_emd(target, pred, device=device))
-                    emd_values.append(emd_val)
-                    plot_cell_samples(
-                        axes[0, i - 1],
-                        pred,
-                        f"t={t_target.item():.2f}, EMD={emd_val:.3f}",
-                    )
-                    plot_cell_samples(axes[1, i - 1], target, "target")
+            from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+            trajectory_figures = []
+            views = [
+                (30.0, -60.0),
+                (45.0, -45.0),
+                (20.0, 45.0),
+            ]
+            for idx, (elev, azim) in enumerate(views):
+                fig3d = plt.figure(figsize=(6, 5))
+                ax3d = fig3d.add_subplot(111, projection="3d")
+                plot_cell_trajectories_3d(
+                    ax3d,
+                    traj,
+                    t_eval,
+                    elev=elev,
+                    azim=azim,
+                )
+                fig3d.tight_layout()
+                trajectory_figures.append((fig3d, f"view{idx}"))
 
-            plt.tight_layout()
             if wandb_run:
-                wandb_run.log({"eval/figure": wandb.Image(fig)})
+                wandb_run.log(
+                    {
+                        "eval/trajectories_3d": [
+                            wandb.Image(fig3d, caption=view_name)
+                            for fig3d, view_name in trajectory_figures
+                        ]
+                    }
+                )
             if cfg.save_plot:
-                fig.savefig(cfg.save_plot, dpi=200)
-
-            plt.close(fig)
+                traj_path = Path(cfg.save_plot)
+                for fig3d, view_name in trajectory_figures:
+                    fig3d.savefig(
+                        traj_path.with_name(
+                            f"{traj_path.stem}_trajectories3d_{view_name}{traj_path.suffix}"
+                        ),
+                        dpi=200,
+                    )
+            for fig3d, _ in trajectory_figures:
+                plt.close(fig3d)
 
             if wandb_run and emd_values:
                 wandb_run.log({
@@ -653,6 +915,46 @@ def main(cfg: TrainConfig) -> None:
                     "eval/emd_std": float(np.std(emd_values)),
                     "eval/seed": seed,
                 })
+
+            if wandb_run is not None:
+                artifact_dir = Path(wandb_run.dir) / "artifacts"
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                traj_artifact_path = artifact_dir / f"{(cfg.wandb_name or 'mfm_model')}_seed{seed}_traj.pt"
+                torch.save(
+                    {
+                        "trajectory": traj.detach().cpu(),
+                        "t_eval": t_eval.detach().cpu(),
+                        "times": times.detach().cpu(),
+                        "seed": seed,
+                        "config": asdict(cfg),
+                    },
+                    traj_artifact_path,
+                )
+                wandb_run.save(str(traj_artifact_path), policy="now")
+
+            if cfg.save_checkpoints:
+                if cfg.checkpoint_dir is not None:
+                    ckpt_dir = Path(cfg.checkpoint_dir)
+                elif wandb_run is not None:
+                    ckpt_dir = Path(wandb_run.dir) / "checkpoints"
+                else:
+                    ckpt_dir = Path("checkpoints")
+
+                prefix = cfg.wandb_name or "mfm_model"
+                ckpt_path = _save_model_checkpoint(
+                    ckpt_dir,
+                    prefix,
+                    seed,
+                    geopath_net,
+                    flow_net,
+                    cfg,
+                    times,
+                    min_max,
+                )
+                if cfg.verbose:
+                    print(f"[info] Saved checkpoint to {ckpt_path}")
+                if wandb_run is not None:
+                    wandb_run.save(str(ckpt_path), policy="now")
     finally:
         if wandb_run is not None:
             wandb_run.finish()
@@ -667,8 +969,10 @@ def parse_config() -> TrainConfig:
     parser.add_argument("--metric-batch-size", type=int, default=None, help="Batch size for metric samples")
     parser.add_argument("--geopath-epochs", type=int, default=None, help="Number of GeoPath epochs")
     parser.add_argument("--geopath-steps", type=int, default=None, help="GeoPath steps per epoch")
+    parser.add_argument("--geopath-lr", type=float, default=None, help="Learning rate for GeoPath optimiser")
     parser.add_argument("--flow-epochs", type=int, default=None, help="Number of flow epochs")
     parser.add_argument("--flow-steps", type=int, default=None, help="Flow steps per epoch")
+    parser.add_argument("--flow-lr", type=float, default=None, help="Learning rate for flow optimiser")
     parser.add_argument("--alpha", type=float, default=None, help="Alpha weighting for geopath corrections")
     parser.add_argument("--sigma", type=float, default=None, help="Sigma for flow matcher noise")
     parser.add_argument("--gamma", type=float, default=None, help="Gamma parameter for Land metric")
@@ -693,7 +997,6 @@ def parse_config() -> TrainConfig:
     parser.add_argument("--cell-test-stack-path", type=str, default=None, help="Optional test stack for evaluation")
     parser.add_argument("--cell-subset-size", type=int, default=None, help="Random subset size per timestep for cell data")
     parser.add_argument("--cell-subset-seed", type=int, default=None, help="Random seed for cell subsampling")
-    parser.add_argument("--pair-sample-size", type=int, default=None, help="Number of consecutive time pairs to use per optimization step")
     parser.add_argument("--mnist-unet-base", type=int, default=None, help="Base channel count for MNIST UNet models")
     parser.add_argument("--mnist-interpolant-hidden", type=int, default=None, help="Hidden width for TrainableInterpolantMNIST")
     parser.add_argument("--cell-flow-width", type=int, default=None, help="Hidden width for cell-tracking flow MLP")
@@ -702,7 +1005,13 @@ def parse_config() -> TrainConfig:
     parser.add_argument("--wandb-name", type=str, default=None, help="wandb run name")
     parser.add_argument("--wandb-project", type=str, default=None, help="wandb project name")
     parser.add_argument("--wandb-entity", type=str, default=None, help="wandb entity")
-    parser.set_defaults(normalize_dataset=cfg.normalize_dataset)
+    parser.add_argument("--checkpoint-dir", type=str, default=None, help="Directory to store final checkpoints")
+    parser.add_argument("--save-checkpoints", dest="save_checkpoints", action="store_true", help="Save model checkpoints")
+    parser.add_argument("--no-save-checkpoints", dest="save_checkpoints", action="store_false", help="Skip saving model checkpoints")
+    parser.set_defaults(
+        normalize_dataset=cfg.normalize_dataset,
+        save_checkpoints=cfg.save_checkpoints,
+    )
 
     args = parser.parse_args()
 
@@ -718,10 +1027,14 @@ def parse_config() -> TrainConfig:
         cfg.geopath_epochs = args.geopath_epochs
     if args.geopath_steps is not None:
         cfg.geopath_steps_per_epoch = args.geopath_steps
+    if args.geopath_lr is not None:
+        cfg.geopath_lr = args.geopath_lr
     if args.flow_epochs is not None:
         cfg.flow_epochs = args.flow_epochs
     if args.flow_steps is not None:
         cfg.flow_steps_per_epoch = args.flow_steps
+    if args.flow_lr is not None:
+        cfg.flow_lr = args.flow_lr
     if args.alpha is not None:
         cfg.alpha = args.alpha
     if args.sigma is not None:
@@ -772,8 +1085,6 @@ def parse_config() -> TrainConfig:
         cfg.cell_flow_width = args.cell_flow_width
     if args.cell_interpolant_hidden is not None:
         cfg.cell_interpolant_hidden = args.cell_interpolant_hidden
-    if args.pair_sample_size is not None:
-        cfg.pair_sample_size = args.pair_sample_size
     if args.no_wandb:
         cfg.use_wandb = False
     if args.wandb_name is not None:
@@ -782,6 +1093,9 @@ def parse_config() -> TrainConfig:
         cfg.wandb_project = args.wandb_project
     if args.wandb_entity is not None:
         cfg.wandb_entity = args.wandb_entity
+    if args.checkpoint_dir is not None:
+        cfg.checkpoint_dir = args.checkpoint_dir
+    cfg.save_checkpoints = args.save_checkpoints
     return cfg
 
 
