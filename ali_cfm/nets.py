@@ -218,7 +218,7 @@ class TrainableInterpolant(nn.Module):
         else:
             raise ValueError(f"Unknown metric {metric}")
 
-        return reg_term
+        return reg_term.mean()
 
     def dI_dt(self, x0, x1, t):
         t = t[..., None] if t.ndim == 1 else t

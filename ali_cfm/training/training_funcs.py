@@ -161,6 +161,45 @@ def train_interpolant_with_gan(
             g_loss_ = F.softplus(-fake_proba).mean()
         
         match cfg.reg_term_type:
+            case "picewise_oskar_version":
+                t = torch.rand(x0.shape[0], 1, device=cfg.device)
+                xt_fake = interpolant(x0, x1, t, training=False)
+
+                coupled_x = torch.stack([x0, xt, x1], dim=1) # (B, 3, D)
+                bs, K, d = coupled_x.shape
+                times = torch.tensor(train_timesteps, device=cfg.device) / t_max
+
+                idx = torch.bucketize(t, times) - 1
+                idx = idx.clamp(0, K - 2)  # keep in valid range
+
+                t0 = times[idx]  # (bs,)
+                t1 = times[idx + 1]  # (bs,)
+                denom = (t1 - t0)  # (bs,)
+
+                a = (t1 - t) / denom
+                b = (t - t0) / denom
+
+                # Select endpoints for each batch element
+                x0 = coupled_x[torch.arange(bs), idx]  # (bs, d)
+                x1 = coupled_x[torch.arange(bs), idx + 1]  # (bs, d)
+
+                xhat_t = a.unsqueeze(-1) * x0 + b.unsqueeze(-1) * x1
+                diff = xt_fake - xhat_t
+                
+                if cfg.reg_metric == 'land_norm':
+                    reg_weight_loss = (diff ** 2).mean()
+                elif cfg.reg_metric == 'l1':
+                    xs, ts = get_marginals(xts)
+                    G = compute_time_dependent_metric(
+                        xhat_t, t, xs, ts, 
+                        gamma=land_gamma, 
+                        t_gamma=land_t_gamma,
+                        normalize_t=True,
+                    )
+                    reg_weight_loss = (diff**2 * G).mean()
+                else:
+                    raise ValueError(f"Unknown metric {cfg.reg_metric}")
+
             case 'linear':
                 reg_weight_loss = \
                     interpolant.compute_linear_reg_term(
@@ -169,8 +208,9 @@ def train_interpolant_with_gan(
                     )
 
             case 'piecewise':
-                t1 = random.choice(train_timesteps[:-1])
-                t1, t2 = t1 / t_max, (t1 + 1) / t_max
+                t1_idx = random.randint(0, len(train_timesteps) - 2)
+                t1, t2 = train_timesteps[t1_idx], train_timesteps[t1_idx + 1]
+                t1, t2 = t1 / t_max, t2 / t_max
 
                 reg_weight_loss = \
                     interpolant.compute_piecewise_reg_term(
