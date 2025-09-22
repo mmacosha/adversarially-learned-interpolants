@@ -38,20 +38,6 @@ class Discriminator(torch.nn.Module):
         return self.net(x)
 
 
-class DiscriminatorMNIST(torch.nn.Module):
-    def __init__(self, in_dim, w=64, apply_sigmoid: bool = True):
-        super().__init__()
-        self.apply_sigmoid = apply_sigmoid
-        self.net = torch.nn.Sequential(
-            nn.Linear(in_dim, 512), nn.LeakyReLU(),
-            nn.Linear(512, 256), nn.LeakyReLU(),
-            nn.Linear(256, 1), nn.Sigmoid() if apply_sigmoid else nn.Identity()
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-
 class TrainableInterpolant(nn.Module):
     def __init__(self, dim, h_dim, t_smooth=0.01, time_varying=False, regulariser='linear'):
         super().__init__()
@@ -166,11 +152,44 @@ class TrainableInterpolant(nn.Module):
             t * (1 - t) * corr_jac.squeeze()
         )
 
+
+class TrainableInterpolantST(TrainableInterpolant):
+    def __init__(self, dim, h_dim, t_smooth=0.01, time_varying=False, regulariser='linear'):
+        super().__init__(dim=dim, h_dim=h_dim, t_smooth=t_smooth, time_varying=time_varying, regulariser=regulariser)
+        # self.interpolant_net = RotationGenerator(dim=dim)
+        self.interpolant_net = nn.Sequential(
+            nn.Linear(2 * dim + 1, h_dim), nn.ELU(),
+            nn.Linear(h_dim, h_dim), nn.ELU(),
+            nn.Linear(h_dim, h_dim), nn.ELU(),
+            nn.Linear(h_dim, dim), nn.Sigmoid()
+        )
+
+
+# Horrible MNIST things below this line
+
+class DiscriminatorMNIST(torch.nn.Module):
+    def __init__(self, in_dim, w=64, apply_sigmoid: bool = True):
+        super().__init__()
+        self.apply_sigmoid = apply_sigmoid
+        self.net = torch.nn.Sequential(
+            nn.Linear(in_dim - 1 + 64, 512), nn.LeakyReLU(),
+            nn.Linear(512, 256), nn.LeakyReLU(),
+            nn.Linear(256, 1), nn.Sigmoid() if apply_sigmoid else nn.Identity()
+        )
+        self.t_emb = TimeEmbedding(n_frequencies=6, out_dim=64)
+
+    def forward(self, x):
+        t = x[..., -1:]
+        t_emb = self.t_emb(t) * torch.pi  # (B, 64)
+        x = torch.cat([x[..., :-1], t_emb], dim=-1)
+        return self.net(x)
+
+
 class TrainableInterpolantMNIST(TrainableInterpolant):
     def __init__(self, dim, h_dim, t_smooth=0.01, time_varying=False, regulariser='linear'):
         super().__init__(dim=dim, h_dim=h_dim, t_smooth=t_smooth, time_varying=time_varying, regulariser=regulariser)
         # self.interpolant_net = RotationGenerator(dim=dim)
-        self.interpolant_net = RemoveRotateNet(dim=dim, latent_dim=64, hidden=1024)
+        self.interpolant_net = RotationGenerator(dim=dim, latent_dim=64, hidden=1024)
 
     def compute_linear_reg_term(self, x0, x1, t, xt):
         correction = xt - x0
@@ -216,6 +235,8 @@ class TrainableInterpolantMNIST(TrainableInterpolant):
 
         xt = self.linear_interpolant(x, x, t)
 
+        # x = torch.randn_like(x)
+
         if training and self.t_smooth > 0:
             t_input = t + torch.randn_like(t) * self.t_smooth
             t_input = t_input.clamp(0, 1)
@@ -227,43 +248,23 @@ class TrainableInterpolantMNIST(TrainableInterpolant):
         correction = self.interpolant_net(input_)
 
         return xt + (t * (1 - t)) * correction
+        # return correction
 
     def dI_dt(self, x0, x1, t):
         t = t[..., None] if t.ndim == 1 else t
 
         def _interpolnet(x0i, ti):
             input_ = torch.cat([x0i, ti], dim=0).unsqueeze(0)
-            out = self.interpolant_net(input_)
+            out = self.interpolant_net(input_, didt=True)
             return out, out
 
         (corr_jac, corr_output) = vmap(
             jacrev(_interpolnet, argnums=1, has_aux=True))(x0, t)
         return (
-            (1 - 2 * t) * corr_output.squeeze() +
-            t * (1 - t) * corr_jac.squeeze()
+            (1 - 2 * t) * 1e-5 / ((t * (1 - t) + 1e-5) ** 2) * (corr_output.squeeze() - x0) +
+                t * (1 - t) / (t * (1 - t) + 1e-5) * corr_jac.squeeze()
         )
 
-
-# class RotationGenerator(nn.Module):
-#     def __init__(self, dim, latent_dim=64, hidden=1024):
-#         super().__init__()
-#
-#         # Encode input digit (x0, flattened 784)
-#         self.enc = nn.Sequential(
-#             nn.Linear(dim, hidden), nn.ReLU(),
-#             nn.Linear(hidden, hidden), nn.ReLU(),
-#             nn.Linear(hidden, latent_dim), nn.ReLU()
-#         )
-#
-#         # Combine digit encoding + theta encoding
-#         in_dim = 2 * latent_dim
-#         self.mlp = nn.Sequential(
-#             nn.Linear(in_dim, hidden), nn.ReLU(),
-#             nn.Linear(hidden, hidden), nn.ReLU(),
-#             nn.Linear(hidden, dim), nn.Tanh()
-#         )
-#
-#         self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=latent_dim)
 
 class RotationGenerator(nn.Module):
     def __init__(self, dim, latent_dim=64, hidden=1024):
@@ -274,17 +275,40 @@ class RotationGenerator(nn.Module):
             nn.Linear(dim + latent_dim, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, dim), nn.Tanh()
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, dim), nn.Tanh(),
         )
+        self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=latent_dim)
 
-        # # Combine digit encoding + theta encoding
-        # in_dim = 2 * latent_dim
-        # self.mlp = nn.Sequential(
-        #     nn.Linear(in_dim, hidden), nn.ReLU(),
-        #     nn.Linear(hidden, hidden), nn.ReLU(),
-        #     nn.Linear(hidden, dim), nn.Tanh()
-        # )
+    def forward(self, input_, didt=False):
+        """
+        x0: (B,784) flattened MNIST image
+        theta: (B,1) rotation angle (in radians or normalized [0,1])
+        """
+        x, t = input_[..., :-1], input_[..., -1:]
+        theta = self.t_embed(t) * torch.pi
 
+        z = torch.cat([x, theta], dim=-1)
+        out = self.mlp(z)  # (B,2 * 784)
+        if didt:
+            return out
+        else:
+            return (out - x) / (t * (1 - t) + 1e-5)
+
+
+class RotationCFM(nn.Module):
+    def __init__(self, dim, latent_dim=64, hidden=1024):
+        super().__init__()
+
+        # Encode input digit (x0, flattened 784)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim + latent_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, dim),
+        )
         self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=latent_dim)
 
     def forward(self, input_):
@@ -293,80 +317,12 @@ class RotationGenerator(nn.Module):
         theta: (B,1) rotation angle (in radians or normalized [0,1])
         """
         x, t = input_[..., :-1], input_[..., -1:]
-        # theta = self.theta_net(t) * torch.pi  # t * 360 / 180 * torch.pi
-        theta = self.t_embed(t) * torch.pi # (B, latent_dim)
+        theta = self.t_embed(t) * torch.pi
 
         z = torch.cat([x, theta], dim=-1)
-        out = self.mlp(z)  # (B,784)
-        # return 4 * out - x / (t * (1 - t) + 1)
-        return 4 * out
-
-
-class RemoveRotateNet(nn.Module):
-    def __init__(self, dim, latent_dim=64, hidden=1024):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(dim + latent_dim, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, dim), nn.Sigmoid()
-        )
-        self.t_embed = TimeEmbedding(n_frequencies=6, out_dim=latent_dim)
-        self.theta_net = nn.Linear(latent_dim, 1)
-
-    def forward(self, input_):
-        x, t = input_[..., :-1], input_[..., -1:]
-        z_theta = self.t_embed(t) * torch.pi
-
-        z = torch.cat([x, z_theta], dim=-1)
-        out = self.mlp(z)  # (B, 784)
-
-        theta = self.theta_net(z_theta)  # (B,1)
-        cos_a, sin_a = torch.cos(theta), torch.sin(theta)
-
-        # build 2×3 affine rotation matrix per batch
-        rot = torch.zeros(x.size(0), 2, 3, device=x.device, dtype=x.dtype)
-        rot[:, 0, 0], rot[:, 0, 1] = cos_a.squeeze(), -sin_a.squeeze()
-        rot[:, 1, 0], rot[:, 1, 1] = sin_a.squeeze(), cos_a.squeeze()
-
-        x_img = x.view(-1, 1, 16, 16)
-        grid = torch.nn.functional.affine_grid(rot, size=x_img.size(), align_corners=False)
-        x_rot = torch.nn.functional.grid_sample(x_img, grid, align_corners=False).view(-1, 16 ** 2)
-        return -4 * out + x_rot
-
-
-class RotationCFM(nn.Module):
-    def __init__(self, dim, latent_dim=64, hidden=1024):
-        super().__init__()
-
-        # Encode input digit (x0, flattened 784)
-        self.enc = nn.Sequential(
-            nn.Linear(dim, hidden), nn.ReLU(),
-            nn.Linear(hidden, latent_dim), nn.ReLU()
-        )
-
-        # Combine digit encoding + theta encoding
-        in_dim = latent_dim + 1
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, dim)
-        )
-
-        self.theta_net = nn.Sequential(
-            nn.Linear(1, 64), nn.ReLU(),
-            nn.Linear(64, 64), nn.ReLU(),
-            nn.Linear(64, 1)
-        )
-
-    def forward(self, input_):
-        xt, t = input_[..., :-1], input_[..., -1:]
-        theta = self.theta_net(t) * torch.pi  # t * 360 / 180 * torch.pi
-
-        z_x = self.enc(xt)  # (B, latent_dim)
-        z = torch.cat([z_x, theta], dim=-1)
-        out = self.mlp(z)  # (B,784)
+        out = self.mlp(z)  # (B,2 * 784)
         return out
+
 
 
 class ConvBlock(nn.Module):
@@ -515,3 +471,63 @@ class UNetCFM(nn.Module):
         x  = self.dec1(x);   x  = self.film4(x, te)
 
         return self.out(x).view(B, -1)
+
+
+def sinusoidal_embedding(t, dim=16, max_freq=10.0):
+    """
+    t: (B,1) in [0,1]
+    returns: (B, 2*dim)
+    """
+    device = t.device
+    freqs = torch.linspace(1.0, max_freq, dim, device=device)  # (dim,)
+    angles = 2 * torch.pi * freqs[None, :] * t  # (B,dim)
+    emb = torch.cat([torch.sin(angles), torch.cos(angles)], dim=-1)  # (B,2*dim)
+    return emb
+
+
+import torch.nn.functional as F
+class CFMNet(nn.Module):
+    def __init__(self, in_ch=1, base_ch=16, t_dim=16):
+        super().__init__()
+        # project time embedding to channel dim
+        self.time_proj = nn.Linear(2*t_dim, base_ch*2)
+
+        # Encoder
+        self.enc1 = nn.Conv2d(in_ch, base_ch, 3, padding=1)       # 16x16 → 16x16
+        self.enc2 = nn.Conv2d(base_ch, base_ch*2, 3, stride=2, padding=1)  # 16x16 → 8x8
+
+        # Bottleneck
+        self.bottleneck = nn.Conv2d(base_ch*2, base_ch*2, 3, padding=1)
+
+        # Decoder
+        self.dec1 = nn.ConvTranspose2d(base_ch*2, base_ch, 4, stride=2, padding=1)  # 8x8 → 16x16
+        self.outc = nn.Conv2d(base_ch, in_ch, 3, padding=1)
+
+    def forward(self, input_):
+        """
+        input_: (B, 257) with flattened image (256) + time (1)
+        returns: (B, 256) vector field
+        """
+        x, t = input_[..., :-1], input_[..., -1:]  # (B,256), (B,1)
+        B = x.shape[0]
+        x = x.view(B, 1, 16, 16)
+
+        # sinusoidal embedding of t
+        temb = sinusoidal_embedding(t, dim=16)  # (B,32)
+        temb = self.time_proj(temb)[:, :, None, None]  # (B,base_ch,1,1)
+
+        # Encoder
+        h1 = F.silu(self.enc1(x))
+        h2 = F.silu(self.enc2(h1))
+
+        # Add time conditioning
+        h2 = h2 + temb.expand(-1, -1, h2.size(2), h2.size(3))
+
+        # Bottleneck
+        h = F.silu(self.bottleneck(h2))
+
+        # Decoder
+        h = F.silu(self.dec1(h))
+        out = self.outc(h).view(B, -1)
+
+        return out

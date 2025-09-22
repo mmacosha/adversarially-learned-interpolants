@@ -117,19 +117,25 @@ def train_ot_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epoc
         y = X.detach().cpu().numpy()
         x = times.detach().cpu().numpy()  # (K,)
 
-        # vectorized spline fit over (n, 2)
+        # vectorized spline fit over (n, D)
         splines = interpolate.CubicSpline(x, y, axis=0)  # no loops
 
         t_np = t.squeeze(-1).detach().cpu().numpy()  # (T,)
-        xt = splines(t_np)  # (T, n, 2)   interpolated positions
+        xt = splines(t_np)  # (T, n, D)   interpolated positions
 
         title = f"Cubic Splines Interpolants ($K=${times.shape[0]})"
     img_dim = int(np.sqrt(xt.shape[-1]))
-    fig, ax = plt.subplots(1, len(test_times_np), figsize=(20, 3))
-    for i, x in enumerate(xt):
-        ax[i].imshow(x[0].reshape(img_dim, img_dim), cmap='gray')
-        ax[i].axis('off')
-    plt.tight_layout()
+    fig, ax = plt.subplots(2, len(test_times_np) // 2, figsize=(15, 3))
+    row, col = 0, 0
+    for i, t_ in enumerate(test_times_np[:-1]):
+        x = xt[i]
+        ax[row, col].imshow(x[0].reshape(img_dim, img_dim), cmap='gray')
+        ax[row, col].set_title(f"t={360 * test_times_np[i]:.0f}°")
+        ax[row, col].axis('off')
+        col += 1
+        if col >= ax.shape[1]:
+            col = 0
+            row += 1
     plt.show()
 
 
@@ -156,10 +162,11 @@ def train_ot_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epoc
             xt = torch.tensor(splines(t_np), device=device, dtype=torch.float32).squeeze(1)
             ut = torch.tensor(splines(t_np, 1), device=device, dtype=torch.float32).squeeze(1)
 
-        B, N, D = xt.shape  # (batch_size, 10, 2)
+        B, N, D = xt.shape
+        # There are B x N samples of dim D, we randomly choose one of the N for each batch element
         col_idx = torch.randint(0, N, (B, 1, 1), device=xt.device)
         xt = xt.gather(1, col_idx.expand(-1, 1, D)).squeeze(1)
-        ut = ut.gather(1, col_idx.expand(-1, 1, D)).squeeze(1)  # (batch_size, 2)
+        ut = ut.gather(1, col_idx.expand(-1, 1, D)).squeeze(1)  # (batch_size, D)
 
         vt = cfm_model(torch.cat([xt, t], dim=-1))
 
@@ -181,7 +188,7 @@ def main(cfg):
     num_int_steps = cfg.num_int_steps_per_timestep
 
     ot_fm = "ot"
-    interpolant = 'linear'  # 'linear' or 'cubic'
+    interpolant = 'cubic'  # 'linear' or 'cubic'
 
     cfm_results = {}
     cfg.dim = data[0].shape[1]
@@ -211,12 +218,11 @@ def main(cfg):
         t_s = torch.linspace(0, 1, 101)
         with torch.no_grad():
             cfm_traj = node.trajectory(denormalize(X0, min_max),
-                                       # t_span= torch.tensor(timesteps_list_test, dtype=torch.float32).to(cfg.device) / max(timesteps_list_test)  #
                                        t_s
                                        )
 
         img_dim = int(np.sqrt(cfg.dim))
-        fig, ax = plt.subplots(2, len(timesteps_list_test) - 1, figsize=(20, 3))
+        fig, ax = plt.subplots(1, len(timesteps_list_test) - 1, figsize=(20, 3))
         for i, t in enumerate(timesteps_list_test[1:]):
             cfm_t = torch.argmin(torch.abs(t_s - t / max(timesteps_list_test)))
             cfm_emd = compute_emd(
@@ -225,15 +231,14 @@ def main(cfg):
             )
             print(f"t={t}, EMD={cfm_emd.item():.4f}")
 
-            ax[0, i].imshow(cfm_traj[cfm_t][0].reshape(img_dim, img_dim).cpu(), cmap='gray')
-            ax[0, i].set_title(f"t={360 * (t / max(timesteps_list_test)):.0f}°")
-            ax[0, i].axis('off')
-            ax[1, i].imshow(test_data[t][0].reshape(img_dim, img_dim).cpu(), cmap='gray')
-            ax[1, i].axis('off')
+            ax[i].imshow(cfm_traj[cfm_t][0].reshape(img_dim, img_dim).cpu(), cmap='gray')
+            ax[i].set_title(f"t={360 * (t / max(timesteps_list_test)):.0f}°")
+            ax[i].axis('off')
             cfm_results[f"seed={seed}"].append(cfm_emd.item())
 
         plt.tight_layout()
         plt.show()
+        print(np.mean(cfm_results[f"seed={seed}"]))
 
 
 if __name__ == '__main__':
