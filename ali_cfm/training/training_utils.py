@@ -186,7 +186,6 @@ def mmot_couple_marginals(X0, X1, Xt, otplan):
     pi1_np = otplan.get_map(X0, Xt)  # shape (n0, nt)
     pi2_np = otplan.get_map(Xt, X1)  # shape (nt, n1)
 
-
     # 2) convert to torch and move to device
     pi1 = torch.from_numpy(pi1_np).to(device)  # (n0, nt)
     pi2 = torch.from_numpy(pi2_np).to(device)  # (nt, n1)
@@ -224,13 +223,32 @@ def integrate_interpolant(x0, x1, n_steps, interpolant):
     return torch.stack(integrated_trajectories)
 
 
-def init_cfm_from_checkpoint(*args, **kwargs):
-    raise NotImplementedError(
-        "CFM checkpoint loading not implemented yet."
+def find_checkpoint(wandb_dir, run_id, time, seed):
+    if run_id is None:
+        raise ValueError("run_id must be specified to load a checkpoint.")
+ 
+    run_path = max(
+        Path(wandb_dir).glob(f"*{run_id}*"),
+        key=lambda p: p.stat().st_mtime, default=None
     )
+    return run_path / "files" / "checkpoints" / f"t={time}_seed={seed}_ali_cfm.pth"
 
 
-def init_interpolant_from_checkpoint(*args, **kwargs):
-    raise NotImplementedError(
-        "Interpolant checkpoint loading not implemented yet."
+def init_cfm_from_checkpoint(model, config, time, seed):
+    ckpt_path = find_checkpoint(
+        "./wandb", config.init_checkpoint_from, time, seed
     )
+    ckpt = torch.load(ckpt_path, map_location=config.device)
+    model.load_state_dict(ckpt['ot_cfm_model'])
+    model.to(config.device).eval()
+    print(f"Loaded CFM model from {ckpt_path}.")
+
+
+def init_interpolant_from_checkpoint(model, config, time, seed):
+    ckpt_path = find_checkpoint(
+        "./wandb", config.init_checkpoint_from, time, seed
+    )
+    ckpt = torch.load(ckpt_path, map_location=config.device)
+    model.load_state_dict(ckpt['interpolant'])
+    model.to(config.device).eval()
+    print(f"Loaded Interpolant model from {ckpt_path}.")

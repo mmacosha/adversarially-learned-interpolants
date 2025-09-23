@@ -14,9 +14,9 @@ from . import training_utils as utils
 
 
 def pretain_interpolant(
-        interpolant, pretrain_optimizer_G, ot_sampler, 
-        train_data, train_timesteps, metric_prefix, cfg,
-    ):
+    interpolant, pretrain_optimizer_G, ot_sampler, 
+    train_data, train_timesteps, metric_prefix, cfg,
+):
     if cfg.num_ali_pretrain_steps == 0:
         return
     
@@ -63,7 +63,7 @@ def train_interpolant_with_gan(
         curr_epoch += 1
         if epoch % 5_000 == 0:
             with torch.no_grad():
-                for time in range(1, 4):
+                for time in range(1, train_timesteps[-1]):
                     test_batch = utils.sample_gan_batch(
                         data, 2300, 
                         divisor=t_max,
@@ -185,7 +185,7 @@ def train_interpolant_with_gan(
 
                 xhat_t = a.unsqueeze(-1) * x0 + b.unsqueeze(-1) * x1
                 diff = xt_fake - xhat_t
-                
+
                 if cfg.reg_metric == 'land_norm':
                     reg_weight_loss = (diff ** 2).mean()
                 elif cfg.reg_metric == 'l1':
@@ -275,9 +275,9 @@ def train_interpolant_with_gan(
 
 
 def train_ot_cfm(
-        ot_cfm_model, ot_cfm_optimizer, interpolant, ot_sampler, 
-        train_data, metric_prefix, cfg, train_timesteps, min_max,
-    ):
+    ot_cfm_model, ot_cfm_optimizer, interpolant, ot_sampler, 
+    train_data, metric_prefix, cfg, train_timesteps, min_max,
+):
     for step in trange(cfg.num_cfm_train_steps, 
                        desc="Training OT CFM Interpolant", leave=False):
         ot_cfm_optimizer.zero_grad()
@@ -293,8 +293,10 @@ def train_ot_cfm(
             )
             x0, x1, xt, _ = (x.to(cfg.device) for x in batch)
         else:
-            x0, x1 = utils.sample_x0_x1(train_data, cfg.batch_size, device=cfg.device)
-            if ot == 'border' or ot == 'full':
+            x0, x1 = utils.sample_x0_x1(
+                train_data, cfg.batch_size, device=cfg.device
+            )
+            if cfg.cfm_ot in {'border', 'full'}:
                 x0, x1 = ot_sampler.sample_plan(x0, x1)
 
         t = torch.rand(x0.shape[0], 1, device=cfg.device)

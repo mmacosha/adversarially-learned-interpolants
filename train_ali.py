@@ -130,7 +130,7 @@ def train_ali(cfg):
                     curr_timesteps, seed, min_max, cfg
                 )
             else:
-                init_interpolant_from_checkpoint()
+                init_interpolant_from_checkpoint(interpolant, cfg, removed_t, seed)
 
             # Train CFM model using GAN interpolant
             if cfg.train_cfm:
@@ -142,7 +142,7 @@ def train_ali(cfg):
                     data, cfm_metric_prefix, cfg, curr_timesteps, min_max,
                 )
             else:
-                init_cfm_from_checkpoint()
+                init_cfm_from_checkpoint(ot_cfm_model, cfg, removed_t, seed)
             
             # Compute metrics for GAN interpolant
             x0 = data[0].to(cfg.device)
@@ -168,25 +168,35 @@ def train_ali(cfg):
                 sensitivity="adjoint"
             )
 
+            # with torch.no_grad():
+            #     ot_cfm_traj = []
+            #     _batch_size = cfg.trajectory_simulation_batch_size
+            #     for i in trange(
+            #             (len(data[removed_t - 1]) + _batch_size - 1) // _batch_size,
+            #             leave=False,
+            #             desc='Collecting CFM trajectories.'
+            #         ):
+            #         data_ = data[removed_t - 1][i * _batch_size: (i + 1) * _batch_size]
+            #         batched_traj = node.trajectory(
+            #             data_.to(cfg.device),
+            #             t_span=torch.linspace(
+            #                 start=(removed_t - 1) / max(timesteps_list), 
+            #                 end=removed_t / max(timesteps_list), 
+            #                 steps=cfg.num_int_steps_per_timestep
+            #             ),
+            #         )
+            #         ot_cfm_traj.append(batched_traj)
+            #     ot_cfm_traj = torch.cat(ot_cfm_traj, dim=1).float()
+
             with torch.no_grad():
-                ot_cfm_traj = []
-                _batch_size = cfg.trajectory_simulation_batch_size
-                for i in trange(
-                        (len(data[removed_t - 1]) + _batch_size - 1) // _batch_size,
-                        leave=False,
-                        desc='Collecting CFM trajectories.'
-                    ):
-                    data_ = data[removed_t - 1][i * _batch_size: (i + 1) * _batch_size]
-                    batched_traj = node.trajectory(
-                        data_.to(cfg.device),
-                        t_span=torch.linspace(
-                            start=(removed_t - 1) / max(timesteps_list), 
-                            end=removed_t / max(timesteps_list), 
-                            steps=cfg.num_int_steps_per_timestep
-                        ),
-                    )
-                    ot_cfm_traj.append(batched_traj)
-                ot_cfm_traj = torch.cat(ot_cfm_traj, dim=1).float()
+                ot_cfm_traj = node.trajectory(
+                    data[removed_t - 1].to(cfg.device),
+                    t_span=torch.linspace(
+                        start=(removed_t - 1) / max(timesteps_list), 
+                        end=removed_t / max(timesteps_list), 
+                        steps=cfg.num_int_steps_per_timestep
+                    ),
+                )
 
             cfm_emd = compute_emd(
                 denormalize(data[removed_t], min_max).to(cfg.device), 

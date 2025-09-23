@@ -43,6 +43,7 @@ cfm_lr: 1e-3
 num_cfm_train_steps: 2001
 
 use_pca: false
+init_checkpoint_from: none
 train_cfm: true
 train_interpolants: true
 num_int_steps_per_timestep: 100
