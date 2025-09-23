@@ -8,7 +8,6 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, List, Optional, Sequence, Tuple, Union
-
 import matplotlib.pyplot as plt
 import numpy as np
 import ot as pot
@@ -87,17 +86,17 @@ class TrainConfig:
     n_data_dims: int = 256
     normalize_dataset: bool = True
 
-    dataset: str = "rotating_mnist"  # or "cell_tracking"
+    dataset: str = "cell_tracking"  # or "cell_tracking"
 
     batch_size: int = 128
     metric_batch_size: int = 512
     geopath_epochs: int = 5
     geopath_steps_per_epoch: int = 200
-    geopath_lr: float = 5e-4
+    geopath_lr: float = 1e-4
 
     flow_epochs: int = 10
     flow_steps_per_epoch: int = 500
-    flow_lr: float = 1e-3
+    flow_lr: float = 1e-4
 
     gamma: float = 0.4
     rho: float = 1e-3
@@ -126,12 +125,13 @@ class TrainConfig:
     metric_kappa: float = 0.5
     metric_epochs: int = 0
     metric_patience: int = 10
-    metric_lr: float = 1e-3
+    metric_lr: float = 1e-3 #not used in land
 
     mnist_unet_base: int = 32
     mnist_interpolant_hidden: int = 512
     cell_flow_width: int = 128
     cell_interpolant_hidden: int = 512
+    whiten: bool = False
 
     use_wandb: bool = True
     wandb_project: str = "mixture-fmls"
@@ -140,6 +140,7 @@ class TrainConfig:
 
     save_checkpoints: bool = True
     checkpoint_dir: Optional[str] = None
+    st_data_dir: Optional[str] = None
 
 def _sample_endpoint_pairs(
     start: torch.Tensor,
@@ -372,46 +373,6 @@ class FlowAdapter(nn.Module):
             return self.base(tb, x)
         return self.base(torch.cat([x, tb], dim=-1))
 
-
-def load_cell_tracking_stack(
-    stack_path: Union[str, Path],
-    subset_size: Optional[int] = None,
-    seed: Optional[int] = None,
-    normalize: bool = True,
-) -> Tuple[List[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-    stack_path = Path(stack_path)
-    if not stack_path.exists():
-        raise FileNotFoundError(f"Cell-tracking stack not found: {stack_path}")
-
-    stack = np.load(stack_path)
-    if stack.ndim != 3:
-        raise ValueError(
-            f"Expected stacked boolean masks with shape (T, H, W), got {stack.shape}"
-        )
-
-    rng = np.random.default_rng(seed)
-    frames: List[torch.Tensor] = []
-    for t in range(stack.shape[0]):
-        coords = np.argwhere(stack[t])  # (K, 2) -> (y, x)
-        if coords.size == 0:
-            raise ValueError(f"Frame {t} in {stack_path} contains no active pixels.")
-        coords = coords[:, [1, 0]].astype(np.float32)  # swap -> (x, y)
-
-        if subset_size is not None and coords.shape[0] > subset_size:
-            idx = rng.choice(coords.shape[0], subset_size, replace=False)
-            coords = coords[idx]
-
-        frames.append(torch.from_numpy(coords))
-
-    if not normalize:
-        return frames, None
-
-    stacked = torch.cat(frames, dim=0)
-    min_ = stacked.min(0).values
-    max_ = stacked.max(0).values
-    scale = (max_ - min_).clamp_min(1e-8)
-    frames = [(frame - min_) / scale for frame in frames]
-    return frames, (min_, max_)
 
 
 def _scatter_cell_points(
@@ -651,43 +612,51 @@ def main(cfg: TrainConfig) -> None:
                 "RotatingMNIST_test", cfg.n_data_dims, normalize=cfg.normalize_dataset
             )
         elif dataset_name == "cell_tracking":
-            if cfg.cell_stack_path is None:
-                raise ValueError(
-                    "--cell-stack-path must be provided when using dataset='cell_tracking'"
-                )
-            data, min_max = load_cell_tracking_stack(
-                cfg.cell_stack_path,
-                subset_size=cfg.cell_subset_size,
-                seed=cfg.cell_subset_seed,
-                normalize=cfg.normalize_dataset,
-            )
-            if cfg.cell_test_stack_path:
-                test_data, _ = load_cell_tracking_stack(
-                    cfg.cell_test_stack_path,
-                    subset_size=cfg.cell_subset_size,
-                    seed=cfg.cell_subset_seed,
+            dataset_key = "cell_tracking"
+            dataset_path = getattr(cfg, "cell_stack_path", None)
+            extra_kwargs = {"whiten": getattr(cfg, "whiten", False)}
+            print(dataset_path)
+            try:
+                data, min_max = get_dataset(
+                    dataset_key,
+                    cfg.n_data_dims,
                     normalize=cfg.normalize_dataset,
+                    **extra_kwargs,
+                    nicola_path=dataset_path,
                 )
-            else:
-                test_data = [frame.clone() for frame in data]
+            except FileNotFoundError:
+                raise
+            import copy
+            test_data = copy.deepcopy(data)
+        elif dataset_name == "st":
+            dataset_path = getattr(cfg, "st_data_dir", None)
+            dataset_key = "ST"
+            data, min_max = get_dataset(
+                dataset_key,
+                cfg.n_data_dims,
+                normalize=cfg.normalize_dataset,
+                nicola_path=dataset_path,
+            )
+            import copy
+            test_data = copy.deepcopy(data)
         else:
             raise ValueError(f"Unknown dataset '{cfg.dataset}'")
 
         print("Using dataset: ", cfg.dataset)
-
-        data = [x.to(device).float() for x in data]
-        test_data = [x.to(device).float() for x in test_data]
-
-        train_shapes = [tuple(x.shape) for x in data]
-        test_shapes = [tuple(x.shape) for x in test_data]
-        print(f"Train frame shapes: {train_shapes[:5]}{' ...' if len(train_shapes) > 5 else ''}")
-        print(f"Test frame shapes:  {test_shapes[:5]}{' ...' if len(test_shapes) > 5 else ''}")
+        
         metric_samples_full = torch.cat(data, dim=0)
         
 
         times = torch.linspace(0.0, 1.0, len(data), device=device)
+        
         dim = data[0].shape[1]
+        
         min_batch = min(x.shape[0] for x in data)
+        
+        print(len(data))
+        
+        print(data[0].shape)
+        print(data[1].shape)
 
         print(
             f"Loaded {cfg.dataset} with {len(data)} timesteps; "
@@ -741,7 +710,7 @@ def main(cfg: TrainConfig) -> None:
                     h_dim=cfg.mnist_interpolant_hidden,
                     t_smooth=0.0,
                     time_varying=True,
-                    regulariser="linear",
+                    # regulariser="linear",
                 ).to(device)
                 setattr(geopath_net, "time_geopath", True)
                 flow_base = cfg.mnist_unet_base
@@ -754,7 +723,7 @@ def main(cfg: TrainConfig) -> None:
                     h_dim=cfg.cell_interpolant_hidden,
                     t_smooth=0.0,
                     time_varying=True,
-                    regulariser="linear",
+                    # regulariser="linear",
                 ).to(device)
                 setattr(geopath_net, "time_geopath", True)
 
@@ -861,53 +830,112 @@ def main(cfg: TrainConfig) -> None:
                 flow_wrapper, solver="dopri5", sensitivity="adjoint"
             ).to(device)
 
-            t_eval = torch.linspace(0, 1, cfg.eval_num_timepoints, device=device)
+            # respect dataset time grid when available
+            if dataset_name in {"cell_tracking", "st"}:
+                t_eval = times
+            else:
+                t_eval = torch.linspace(0, 1, cfg.eval_num_timepoints, device=device)
+                
             X0 = test_data[0]
 
             with torch.no_grad():
-                traj = node.trajectory(denormalize(X0, min_max), t_span=t_eval)
+                if cfg.normalize_dataset:
+                    traj = node.trajectory(denormalize(X0, min_max), t_span=t_eval)
+                else:
+                    traj = node.trajectory(X0, t_span=t_eval)
 
             emd_values: List[float] = []
-            from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-            trajectory_figures = []
-            views = [
-                (30.0, -60.0),
-                (45.0, -45.0),
-                (20.0, 45.0),
-            ]
-            for idx, (elev, azim) in enumerate(views):
-                fig3d = plt.figure(figsize=(6, 5))
-                ax3d = fig3d.add_subplot(111, projection="3d")
-                plot_cell_trajectories_3d(
-                    ax3d,
-                    traj,
-                    t_eval,
-                    elev=elev,
-                    azim=azim,
-                )
-                fig3d.tight_layout()
-                trajectory_figures.append((fig3d, f"view{idx}"))
+            if dataset_name == "cell_tracking":
+                # 3D plot
+                from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-            if wandb_run:
-                wandb_run.log(
-                    {
-                        "eval/trajectories_3d": [
-                            wandb.Image(fig3d, caption=view_name)
-                            for fig3d, view_name in trajectory_figures
-                        ]
-                    }
+                trajectory_figures = []
+                views = [
+                    (30.0, -60.0),
+                    (45.0, -45.0),
+                    (20.0, 45.0),
+                ]
+                for idx, (elev, azim) in enumerate(views):
+                    fig3d = plt.figure(figsize=(6, 5))
+                    ax3d = fig3d.add_subplot(111, projection="3d")
+                    plot_cell_trajectories_3d(
+                        ax3d,
+                        traj,
+                        t_eval,
+                        elev=elev,
+                        azim=azim,
+                    )
+                    fig3d.tight_layout()
+                    trajectory_figures.append((fig3d, f"view{idx}"))
+
+                if wandb_run:
+                    wandb_run.log(
+                        {
+                            "eval/trajectories_3d": [
+                                wandb.Image(fig3d, caption=view_name)
+                                for fig3d, view_name in trajectory_figures
+                            ]
+                        }
+                    )
+                if cfg.save_plot:
+                    traj_path = Path(cfg.save_plot)
+                    for fig3d, view_name in trajectory_figures:
+                        fig3d.savefig(
+                            traj_path.with_name(
+                                f"{traj_path.stem}_trajectories3d_{view_name}{traj_path.suffix}"
+                            ),
+                            dpi=200,
+                        )
+                for fig3d, _ in trajectory_figures:
+                    plt.close(fig3d)
+            else:
+                # 2D plot
+                max_panels = min(6, len(test_data) - 1)
+                panel_indices = (
+                    np.linspace(1, len(test_data) - 1, num=max_panels, dtype=int)
+                    if max_panels > 0
+                    else np.array([], dtype=int)
                 )
-            if cfg.save_plot:
-                traj_path = Path(cfg.save_plot)
-                for fig3d, view_name in trajectory_figures:
-                    fig3d.savefig(
-                        traj_path.with_name(
-                            f"{traj_path.stem}_trajectories3d_{view_name}{traj_path.suffix}"
-                        ),
+                panel_indices = np.unique(panel_indices)
+                if len(panel_indices) == 0:
+                    panel_indices = np.array([len(test_data) - 1], dtype=int)
+
+                fig_overlay, axes_overlay = plt.subplots(
+                    1, len(panel_indices), figsize=(4 * len(panel_indices), 4)
+                )
+                axes_overlay = np.atleast_1d(axes_overlay)
+
+                for col, idx_time in enumerate(panel_indices):
+                    t_target = times[idx_time]
+                    idx = torch.argmin(torch.abs(t_eval - t_target)).item()
+                    pred = traj[idx].float().cpu()
+                    if cfg.normalize_dataset:
+                        target = denormalize(test_data[idx_time], min_max).cpu()
+                    else:
+                        target = test_data[idx_time].cpu()
+                    emd_val = float(compute_emd(target.to(device), pred.to(device), device=device))
+                    emd_values.append(emd_val)
+
+                    ax = axes_overlay[col]
+                    ax.scatter(target[:, 0], target[:, 1], s=10, c="red", alpha=0.4, label="target" if col == 0 else None)
+                    ax.scatter(pred[:, 0], pred[:, 1], s=10, c="blue", alpha=0.7, label="prediction" if col == 0 else None)
+                    ax.set_title(f"t={t_target.item():.2f}, EMD={emd_val:.3f}")
+                    ax.set_aspect("equal")
+                    ax.axis("off")
+                if len(panel_indices) > 0:
+                    axes_overlay[0].legend(frameon=False, loc="upper right")
+
+                fig_overlay.tight_layout()
+
+                if wandb_run:
+                    wandb_run.log({"eval/overlay": wandb.Image(fig_overlay)})
+                if cfg.save_plot:
+                    overlay_path = Path(cfg.save_plot)
+                    fig_overlay.savefig(
+                        overlay_path.with_name(f"{overlay_path.stem}_overlay{overlay_path.suffix}"),
                         dpi=200,
                     )
-            for fig3d, _ in trajectory_figures:
-                plt.close(fig3d)
+                plt.close(fig_overlay)
 
             if wandb_run and emd_values:
                 wandb_run.log({
@@ -1008,6 +1036,7 @@ def parse_config() -> TrainConfig:
     parser.add_argument("--checkpoint-dir", type=str, default=None, help="Directory to store final checkpoints")
     parser.add_argument("--save-checkpoints", dest="save_checkpoints", action="store_true", help="Save model checkpoints")
     parser.add_argument("--no-save-checkpoints", dest="save_checkpoints", action="store_false", help="Skip saving model checkpoints")
+    parser.add_argument("--st-data-dir", type=str, default=None, help="Directory containing ST CSV files")
     parser.set_defaults(
         normalize_dataset=cfg.normalize_dataset,
         save_checkpoints=cfg.save_checkpoints,
@@ -1096,6 +1125,11 @@ def parse_config() -> TrainConfig:
     if args.checkpoint_dir is not None:
         cfg.checkpoint_dir = args.checkpoint_dir
     cfg.save_checkpoints = args.save_checkpoints
+    if args.st_data_dir is not None:
+        cfg.st_data_dir = args.st_data_dir
+    
+    print(cfg.cell_stack_path)
+        
     return cfg
 
 
