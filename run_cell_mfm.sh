@@ -51,9 +51,13 @@ run_job() {
 
 # Example sweeps; uncomment the variants you need.
 run_job 42 0.4 1e-4 1e-4 "gamma_0.4_land" "--metric-velocity land --piecewise-training"
-run_job 43 0.3 1e-4 1e-4 "gamma_0.3_land" "--metric-velocity land"
-run_job 44 0.1 5e-5 1e-4 "gamma_0.1_land" "--metric-velocity land --rho 5e-4"
-# run_job 45 0.9 1e-4 1e-4 "gamma_0.9_baseline" "--metric-velocity land"
+run_job 42 0.3 1e-4 1e-4 "gamma_0.3_land" "--metric-velocity land"
+run_job 42 0.2 1e-4 1e-4 "gamma_0.3_land" "--metric-velocity land"
+run_job 42 0.1 5e-5 1e-4 "gamma_0.1_land" "--metric-velocity land --rho 5e-4"
 
 wait
 echo "All MFM jobs finished."
+
+# Single run:
+
+# python rotating_MNIST/train_mfm.py --dataset cell_tracking --cell-stack-path cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy --cell-subset-size 10 --geopath-epochs 30 --geopath-steps 2500 --flow-epochs 30 --flow-steps 2500 --gamma 0.4 --geopath-lr 1e-4 --flow-lr 1e-4 --seeds 42 --metric-velocity land --piecewise-training --wandb-name mfm_celltrack_s42_gamma_0.4_land --save-plot outputs/mfm_celltrack_s42_gamma_0.4_land/cell_mfm_eval.png --checkpoint-dir checkpoints/mfm_celltrack_s42_gamma_0.4_land --device mps

@@ -60,3 +60,8 @@ run_job 50 0.20 5e-4 1e-4 1e-4 "gamma0.20_rho5e-4_all1e-4_piecewise" "--metric-v
 
 wait
 echo "All ST MFM jobs finished."
+
+
+# Single run: 
+
+# python rotating_MNIST/train_mfm.py --dataset st --st-data-dir data/ST/nicola_data --geopath-epochs 30 --geopath-steps 2500 --flow-epochs 30 --flow-steps 2500 --gamma 0.4 --geopath-lr 1e-4 --flow-lr 1e-4 --seeds 42 --metric-velocity land --wandb-name mfm_st_s42_gamma0.4 --save-plot outputs/mfm_st_s42_gamma0.4/st_mfm_eval.png --checkpoint-dir checkpoints/mfm_st_s42_gamma0.4 --device mps
