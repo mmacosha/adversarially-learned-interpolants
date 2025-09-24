@@ -31,7 +31,8 @@ class CellOverlayViewer:
         self.save_path = self.save_base_path + f"{method}_inferred.gif"
         self.animate = animate
 
-    def overlay_masks(self, inferred_masks, cmap="viridis", point_size=6, alpha=0.7):
+    def overlay_masks(self, inferred_masks, cmap="viridis", point_size=6, alpha=0.7, frame_indices=None,
+                      min_max=None, path=None):
         """
         Overlay inferred masks on the raw images, static plots.
 
@@ -46,24 +47,74 @@ class CellOverlayViewer:
                 f"Expected {self.num_frames} masks, got {len(inferred_masks)}"
             )
 
+        inferred_masks = denormalize(inferred_masks, min_max)
+        frame_indices = np.arange(0, 115, dtype=np.int32) if frame_indices is None else frame_indices
+
         for i, (img, mask_coords) in enumerate(zip(self.images, inferred_masks)):
+            if i in frame_indices:
+                pass
+            else:
+                continue
             fig, ax = plt.subplots(figsize=(6, 6))
             ax.imshow(img, cmap="gray")
 
             if mask_coords is not None and len(mask_coords) > 0:
                 xs, ys = mask_coords[:, 0], mask_coords[:, 1]
-                sc = ax.scatter(xs, ys, c=np.arange(len(xs)), cmap=cmap,
+                sc = ax.scatter(xs, ys, color='red',
                                 s=point_size, alpha=alpha)
-
-                divider = make_axes_locatable(ax)
-                cax = divider.append_axes("right", size="3%", pad=0.05)
-                cbar = plt.colorbar(sc, cax=cax)
-                cbar.set_label("mask index")
-
-            ax.set_title(f"Frame {i}")
+            ax.set_title("")
             ax.axis("off")
-            plt.tight_layout()
+            # ax.set_position([0, 0, 1, 1])
+            if path is None:
+                plt.tight_layout(pad=0., h_pad=0)
+                plt.show()
+            else:
+                plt.savefig(f"{path}/frame{i}.png", bbox_inches="tight", pad_inches=0)
+
+    def overlay_masks_subplot(self, inferred_masks, cmap="viridis", point_size=6, alpha=0.7, frame_indices=None,
+                      min_max=None, path=None):
+        """
+        Overlay inferred masks on the raw images, static plots.
+
+        Args:
+            inferred_masks (list[np.ndarray]): Each entry is (N,2) numpy array of (x,y) coords.
+            cmap (str): Colormap for scatter points.
+            point_size (int): Scatter marker size.
+            alpha (float): Transparency of scatter markers.
+        """
+        if len(inferred_masks) != self.num_frames:
+            raise ValueError(
+                f"Expected {self.num_frames} masks, got {len(inferred_masks)}"
+            )
+
+        inferred_masks = denormalize(inferred_masks, min_max)
+        frame_indices = np.arange(0, 115, dtype=np.int32) if frame_indices is None else frame_indices
+
+        fig, axes = plt.subplots(1, 6, figsize=(12, 6))
+        ax = axes.flatten()
+        j = 0
+        for i, (img, mask_coords) in enumerate(zip(self.images, inferred_masks)):
+            if i in frame_indices:
+                pass
+            else:
+                continue
+            ax[j].imshow(img, cmap="gray")
+
+            if mask_coords is not None and len(mask_coords) > 0:
+                xs, ys = mask_coords[:, 0], mask_coords[:, 1]
+                sc = ax[j].scatter(xs, ys, color='red',
+                                   s=point_size, alpha=alpha)
+            ax[j].set_title("")
+            h, w = img.shape[:2]
+            ax[j].set_xlim([0, w])
+            ax[j].set_ylim([h, 0])
+            ax[j].axis("off")
+            j += 1
+        plt.tight_layout(pad=0., h_pad=0., w_pad=0.5)
+        if path is None:
             plt.show()
+        else:
+            plt.savefig(f"{path}/subplot.png", bbox_inches="tight", pad_inches=0)
 
     def animate_masks(self, inferred_masks, data, interval=200, point_size=6, alpha=0.01):
         """
@@ -149,10 +200,9 @@ class CellOverlayViewer:
         cbar.set_label(r"$t$")
         cbar.set_ticks([0, 0.25, 0.5, 0.75, 1])
 
-        ax.set_xlabel("x")
-        ax.set_ylabel("y")
-        ax.set_ylim(200, 500)
-        ax.set_xlim(200, 500)
+        ax.set_xlim(200, 450)
+        ax.set_ylim(275, 475)
+        ax.invert_yaxis()
         plt.tight_layout()
         if wandb is not None:
             wandb.log({f"{metric_prefix}/scatter": wandb.Image(fig), f"{metric_prefix}_step": epoch})
@@ -171,8 +221,8 @@ class CellOverlayViewer:
         ax.set_xlabel("x")
         ax.set_ylabel("y")
         ax.set_zlabel("t")
-        ax.set_xlim(200, 500)
-        ax.set_ylim(200, 500)
+        ax.set_xlim(275, 475)
+        ax.set_ylim(240, 450)
         ax.set_zlim(0, 1)
         plt.tight_layout()
         if wandb is not None:
