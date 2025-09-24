@@ -156,7 +156,7 @@ def train_ali(cfg):
             )
         else:
             PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/wandb/"
-                    "run-20250909_151711-o1ae2po2/files/checkpoints")
+                    "run-20250923_161323-ttjnmi1x/files/checkpoints")
             load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
             interpolant.load_state_dict(load_checkpoint['interpolant'])
 
@@ -206,13 +206,13 @@ def train_ali(cfg):
             torch.save(checkpoint, save_path)
         else:
             PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/wandb"
-                    "/run-20250909_151711-o1ae2po2/files/checkpoints")
+                    "/run-20250923_161323-ttjnmi1x/files/checkpoints")
             load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
             ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
-        cov.plot_fn(interpolant, None, None, max(timesteps_list), data,
-                    ot_sampler, cfg.device, None, timesteps_list,
-                    None, min_max, method="ali")
+        # cov.plot_fn(interpolant, None, None, max(timesteps_list), data,
+        #             ot_sampler, cfg.device, None, timesteps_list,
+        #             None, min_max, method="ali")
 
         # Compute metrics for OT-CFM
         node = NeuralODE(torch_wrapper(ot_cfm_model),
@@ -224,9 +224,11 @@ def train_ali(cfg):
                                        t_span= torch.tensor(timesteps_list, dtype=torch.float32).to(cfg.device) / max(timesteps_list)  # torch.linspace(0, 1, num_int_steps + 1),
                                        )
 
-        cov.plot_fn(cfm_traj, None, None, max(timesteps_list), data,
-                    ot_sampler, cfg.device, None, np.array(timesteps_list) / max(timesteps_list),
-                    None, min_max, method="ali-cfm")
+        # cov.plot_fn(cfm_traj, None, None, max(timesteps_list), data,
+        #             ot_sampler, cfg.device, None, np.array(timesteps_list) / max(timesteps_list),
+        #             None, min_max, method="ali-cfm")
+        ckpt = {"trajectory": cfm_traj}
+        torch.save(ckpt, "/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/traj_ckpts/ali_cfm_traj.pt")
 
         # mean_emd = 0
         # for t in timesteps_list[1:]:

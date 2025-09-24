@@ -72,9 +72,11 @@ for i, (centroid, color) in enumerate(zip(centroids, colors)):
         if i > 0 and not np.isnan(centroids[i-1][0]):
             ax_traj.plot([centroids[i-1][0], centroid[0]], [centroids[i-1][1], centroid[1]], color=color, linewidth=2, zorder=1)
 
-ax_traj.set_title('Cell centroid trajectory', fontsize=15)
-ax_traj.set_xlabel('X', fontsize=15)
-ax_traj.set_ylabel('Y', fontsize=15)
+ax_traj.set_xlabel('$x$', fontsize=20)
+ax_traj.set_ylabel('$y$', fontsize=20)
+ax_traj.tick_params(labelsize=20)
+ax_traj.set_ylim(275, 475)
+ax_traj.set_xlim(250, 450)
 ax_traj.invert_yaxis()
 ax_traj.axis('equal')
 

@@ -211,7 +211,7 @@ def main(cfg):
     num_int_steps = cfg.num_int_steps_per_timestep
 
     ot_fm = "ot"
-    interpolant = 'linear'  # 'linear' or 'cubic'
+    interpolant = 'cubic'  # 'linear' or 'cubic'
     cov = CellOverlayViewer('/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/data/PhC-C2DH-U373/01/',
                             method=interpolant)
 
@@ -223,9 +223,6 @@ def main(cfg):
 
         curr_timesteps = timesteps_list
 
-        # N_min = min([x.shape[0] for x in data])
-        # idx = np.random.choice(np.arange(0, N_min), n_samples, replace=False)
-        # subset_data = [x[idx] for x in data]
         subset_data = [x[np.random.choice(np.arange(0, x.shape[0]), n_samples, replace=False)] for x in data]
 
         ot_cfm_model = MLP(dim=cfg.dim, time_varying=True, w=cfg.net_hidden).to(cfg.device)
@@ -247,6 +244,8 @@ def main(cfg):
         cov.plot_fn(cfm_traj, None, None, max(timesteps_list), data,
                     None, cfg.device, None, np.array(timesteps_list) / max(timesteps_list),
                     None, min_max, method="ot_cfm")
+        ckpt = {"trajectory": cfm_traj}
+        torch.save(ckpt, f"/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/traj_ckpts/{interpolant}_traj.pt")
 
 
 
