@@ -38,6 +38,7 @@ os.environ.setdefault("NUMBA_CACHE_DIR", NUMBA_CACHE_DIR)
 
 
 from ali_cfm.data_utils import denormalize, denormalize_gradfield, get_dataset
+from ali_cfm.training.training_utils import sample_x_batch
 from ali_cfm.nets import CorrectionUNet, MLP, TrainableInterpolant, TrainableInterpolantMNIST
 from ali_cfm.loggin_and_metrics import compute_emd
 from mfm.flow_matchers.models.mfm import MetricFlowMatcher
@@ -152,17 +153,9 @@ def _sample_endpoint_pairs(
     replace_start = batch_size > start.shape[0]
     replace_end = batch_size > end.shape[0]
 
-    if replace_start:
-        idx_start = torch.randint(0, start.shape[0], (batch_size,), device=start.device)
-    else:
-        idx_start = torch.randperm(start.shape[0], device=start.device)[:batch_size]
-
-    if replace_end:
-        idx_end = torch.randint(0, end.shape[0], (batch_size,), device=end.device)
-    else:
-        idx_end = torch.randperm(end.shape[0], device=end.device)[:batch_size]
-
-    return start.index_select(0, idx_start), end.index_select(0, idx_end)
+    x0 = sample_x_batch(start.detach().cpu(), batch_size)
+    x1 = sample_x_batch(end.detach().cpu(), batch_size)
+    return x0.to(start.device), x1.to(end.device)
 
 
 def train_geopath(
@@ -692,7 +685,13 @@ def main(cfg: TrainConfig) -> None:
 
         print("Using dataset: ", cfg.dataset)
 
-        times = torch.linspace(0.0, 1.0, len(data), device=device)
+        if len(data) == 0:
+            raise ValueError("No data available for training")
+        if dataset_name in {"cell_tracking", "st"} and len(data) > 1:
+            time_indices = torch.arange(len(data), device=device, dtype=torch.float32)
+            times = time_indices / time_indices[-1]
+        else:
+            times = torch.linspace(0.0, 1.0, len(data), device=device)
 
         dim = data[0].shape[1]
 
@@ -898,6 +897,12 @@ def main(cfg: TrainConfig) -> None:
 
             flow_optimizer = Adam(flow_net.parameters(), lr=cfg.flow_lr)
 
+            denorm_flow = (
+                dataset_name == "cell_tracking"
+                and cfg.normalize_dataset
+                and min_max is not None
+            )
+
             total_flow_steps = cfg.flow_epochs * cfg.flow_steps_per_epoch
             flow_loss = None
             if total_flow_steps > 0:
@@ -905,7 +910,6 @@ def main(cfg: TrainConfig) -> None:
                     print(
                         f"[debug] Starting flow training for {total_flow_steps} steps (batch={current_batch_size})"
                     )
-                denorm_flow = bool(cfg.normalize_dataset and min_max is not None)
 
                 flow_loss = train_flow(
                     flow_matcher,
@@ -943,14 +947,47 @@ def main(cfg: TrainConfig) -> None:
                 t_eval = times
             else:
                 t_eval = torch.linspace(0, 1, cfg.eval_num_timepoints, device=device)
-                
-            X0 = test_data[0].to(device)
 
-            with torch.no_grad():
-                if cfg.normalize_dataset:
-                    traj = node.trajectory(denormalize(X0, min_max), t_span=t_eval)
-                else:
-                    traj = node.trajectory(X0, t_span=t_eval)
+            def _prepare_for_model(frame: torch.Tensor) -> torch.Tensor:
+                if cfg.normalize_dataset and denorm_flow:
+                    return denormalize(frame, min_max)
+                return frame
+
+            def _to_eval_scale(tensor: torch.Tensor) -> torch.Tensor:
+                if cfg.normalize_dataset and not denorm_flow:
+                    return denormalize(tensor, min_max)
+                return tensor
+
+            if dataset_name == "st":
+                predicted_states = []
+                base_frame = test_data[0].to(device)
+                base_eval = _to_eval_scale(_prepare_for_model(base_frame))
+                predicted_states.append(base_eval)
+                for idx_time in range(1, len(test_data)):
+                    start_frame = test_data[idx_time - 1].to(device)
+                    t_start = float(t_eval[idx_time - 1].item())
+                    t_end = float(t_eval[idx_time].item())
+                    segment_span = torch.linspace(
+                        t_start,
+                        t_end,
+                        cfg.eval_num_timepoints,
+                        device=device,
+                    )
+                    with torch.no_grad():
+                        seg_traj = node.trajectory(
+                            _prepare_for_model(start_frame),
+                            t_span=segment_span,
+                        )
+                    predicted_states.append(_to_eval_scale(seg_traj[-1]))
+                traj = torch.stack(predicted_states, dim=0)
+            else:
+                X0 = test_data[0].to(device)
+                with torch.no_grad():
+                    traj_model = node.trajectory(
+                        _prepare_for_model(X0),
+                        t_span=t_eval,
+                    )
+                traj = _to_eval_scale(traj_model)
 
             emd_values: List[float] = []
             if dataset_name == "cell_tracking":
@@ -1266,11 +1303,20 @@ def main(cfg: TrainConfig) -> None:
                 plt.close(fig_overlay)
 
             if wandb_run and emd_values:
-                wandb_run.log({
-                    "eval/emd_mean": float(np.mean(emd_values)),
-                    "eval/emd_std": float(np.std(emd_values)),
-                    "eval/seed": seed,
-                })
+                emd_array = np.array(emd_values, dtype=float)
+                if np.any(np.isnan(emd_array)) or np.any(np.isinf(emd_array)):
+                    print(
+                        f"[warn] seed={seed}: invalid EMD values detected",
+                        emd_array.tolist(),
+                    )
+                else:
+                    wandb_run.log(
+                        {
+                            "eval/emd_mean": float(np.mean(emd_array)),
+                            "eval/emd_std": float(np.std(emd_array)),
+                            "eval/seed": seed,
+                        }
+                    )
 
             if wandb_run is not None:
                 artifact_dir = Path(wandb_run.dir) / "artifacts"

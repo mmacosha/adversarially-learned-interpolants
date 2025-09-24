@@ -51,9 +51,7 @@ run_job() {
 
 # Example sweeps; uncomment the variants you need.
 run_job 42 0.4 1e-4 1e-4 "gamma_0.4_land" "--metric-velocity land --piecewise-training"
-run_job 42 0.3 1e-4 1e-4 "gamma_0.3_land" "--metric-velocity land"
-run_job 42 0.2 1e-4 1e-4 "gamma_0.3_land" "--metric-velocity land"
-run_job 42 0.1 5e-5 1e-4 "gamma_0.1_land" "--metric-velocity land --rho 5e-4"
+run_job 42 0.4 1e-4 1e-4 "gamma_0.4_land" "--metric-velocity land"
 
 wait
 echo "All MFM jobs finished."
