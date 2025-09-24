@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Union
 import numpy as np
 
 import torch
@@ -29,7 +30,7 @@ def finish_results_table(table, timesteps):
     return table
 
 
-def get_run_dir(run_id: str, search_dir: str | Path = './wandb'):
+def get_run_dir(run_id: str, search_dir: Union[str, Path] = './wandb'):
     found_dirs = [*Path(search_dir).glob(f"*{run_id}*")]
     if not found_dirs:
         raise FileNotFoundError(f"No directories found for run_id: {run_id}")
