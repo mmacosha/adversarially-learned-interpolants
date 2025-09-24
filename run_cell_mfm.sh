@@ -28,7 +28,7 @@ COMMON_ARGS=(
 )
 
 run_job() {
-  local seed="$1" gamma="$2" geopath_lr="$3" flow_lr="$4" name_suffix="$5"
+  local seed="$1" gamma="$2" geopath_lr="$3" flow_lr="$4" name_suffix="$5" extra_args="$6"
   local wandb_name="mfm_celltrack_s${seed}_${name_suffix}"
   local log_dir="logs"
   local out_dir="outputs/${wandb_name}"
@@ -45,13 +45,15 @@ run_job() {
     --wandb-name "$wandb_name" \
     --save-plot "${out_dir}/cell_mfm_eval.png" \
     --checkpoint-dir "$ckpt_dir" \
+    ${extra_args} \
     >"${log_dir}/run_${wandb_name}.log" 2>&1 &
 }
 
-# run_job 42 0.4 1e-4 1e-4 "gamma_0.4"
-# run_job 42 0.3 1e-4 1e-4 "gamma_0.3"
-# run_job 42 0.1 1e-4 1e-4 "gamma_0.1"
-run_job 42 0.9 1e-4 1e-4 "gamma_0.9"
+# Example sweeps; uncomment the variants you need.
+run_job 42 0.4 1e-4 1e-4 "gamma_0.4_land" "--metric-velocity land --piecewise-training"
+run_job 43 0.3 1e-4 1e-4 "gamma_0.3_land" "--metric-velocity land"
+run_job 44 0.1 5e-5 1e-4 "gamma_0.1_land" "--metric-velocity land --rho 5e-4"
+# run_job 45 0.9 1e-4 1e-4 "gamma_0.9_baseline" "--metric-velocity land"
 
 wait
 echo "All MFM jobs finished."
