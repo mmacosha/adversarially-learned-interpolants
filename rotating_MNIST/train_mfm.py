@@ -37,7 +37,7 @@ os.makedirs(NUMBA_CACHE_DIR, exist_ok=True)
 os.environ.setdefault("NUMBA_CACHE_DIR", NUMBA_CACHE_DIR)
 
 
-from ali_cfm.data_utils import denormalize, get_dataset
+from ali_cfm.data_utils import denormalize, denormalize_gradfield, get_dataset
 from ali_cfm.nets import CorrectionUNet, MLP, TrainableInterpolant, TrainableInterpolantMNIST
 from mfm.flow_matchers.models.mfm import MetricFlowMatcher
 from mfm.geo_metrics.metric_factory import DataManifoldMetric
@@ -117,8 +117,8 @@ class TrainConfig:
 
     cell_stack_path: Optional[str] = None
     cell_test_stack_path: Optional[str] = None
-    cell_subset_size: Optional[int] = None
-    cell_subset_seed: Optional[int] = 42
+    cell_subset_size: Optional[int] = 10
+    cell_subset_seed: Optional[int] = None
 
     velocity_metric: str = "land"
     metric_n_centers: int = 100
@@ -155,7 +155,6 @@ def _sample_endpoint_pairs(
 
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
-
     replace_start = batch_size > start.shape[0]
     replace_end = batch_size > end.shape[0]
 
@@ -210,6 +209,9 @@ def train_geopath(
 
         if ot_sampler is not None:
             x0, x1 = ot_sampler.sample_plan(x0, x1, replace=True)
+
+        x0 = x0.to(start_data.device)
+        x1 = x1.to(end_data.device)
 
         t, xt, ut = flow_matcher.sample_location_and_conditional_flow(
             x0,
@@ -274,6 +276,8 @@ def train_flow(
     wandb_run: Optional[Any] = None,
     log_interval: int = 500,
     seed: Optional[int] = None,
+    denormalize_inputs: bool = False,
+    min_max: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
 ) -> float:
     flow_net.train()
 
@@ -288,6 +292,9 @@ def train_flow(
 
         if ot_sampler is not None:
             x0, x1 = ot_sampler.sample_plan(x0, x1, replace=True)
+
+        x0 = x0.to(data[0].device)
+        x1 = x1.to(data[-1].device)
 
         t_min = times[0]
         t_max = times[-1]
@@ -317,6 +324,10 @@ def train_flow(
             t_batch = t_batch[:, None]
         xt_batch = xt
         ut_batch = ut
+
+        if denormalize_inputs and min_max is not None:
+            xt_batch = denormalize(xt_batch, min_max)
+            ut_batch = denormalize_gradfield(ut_batch, min_max)
 
         try:
             vt = flow_net(t_batch, xt_batch)
@@ -521,6 +532,7 @@ def plot_cell_trajectories_3d(
     cmap_name: str = "viridis",
     elev: float = 30.0,
     azim: float = -60.0,
+    title: str = "Flow trajectories (3D)",
 ) -> None:
     traj = trajectories.detach().cpu().numpy()  # (T, N, 2)
     times_np = times.detach().cpu().numpy()      # (T,)
@@ -538,7 +550,7 @@ def plot_cell_trajectories_3d(
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_zlabel("t")
-    ax.set_title("Flow trajectories (3D)")
+    ax.set_title(title)
     ax.view_init(elev=elev, azim=azim)
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
@@ -643,39 +655,36 @@ def main(cfg: TrainConfig) -> None:
             raise ValueError(f"Unknown dataset '{cfg.dataset}'")
 
         print("Using dataset: ", cfg.dataset)
-        
-        metric_samples_full = torch.cat(data, dim=0)
-        
 
         times = torch.linspace(0.0, 1.0, len(data), device=device)
-        
+
         dim = data[0].shape[1]
-        
-        min_batch = min(x.shape[0] for x in data)
-        
+
+        original_min_batch = min(x.shape[0] for x in data)
+
         print(len(data))
-        
+
         print(data[0].shape)
         print(data[1].shape)
 
         print(
             f"Loaded {cfg.dataset} with {len(data)} timesteps; "
-            f"min batch {min_batch}; feature dim {dim}"
+            f"min batch {original_min_batch}; feature dim {dim}"
         )
         if cfg.verbose:
             for idx, frame in enumerate(data):
                 print(f"  train t={idx}: {tuple(frame.shape)}")
 
-        if cfg.batch_size > min_batch:
+        if cfg.batch_size > original_min_batch:
             print(
-                f"[info] Reducing batch size from {cfg.batch_size} to {min_batch} to match available samples"
+                f"[info] Reducing batch size from {cfg.batch_size} to {original_min_batch} to match available samples"
             )
-            cfg.batch_size = min_batch
+            cfg.batch_size = original_min_batch
 
         if wandb_run:
             wandb_run.log({
                 "data/num_timesteps": len(data),
-                "data/min_batch": min_batch,
+                "data/min_batch": original_min_batch,
                 "data/feature_dim": dim,
             })
 
@@ -703,6 +712,53 @@ def main(cfg: TrainConfig) -> None:
 
         for seed in cfg.seed_list:
             fix_seed(seed)
+
+            train_frames = data
+
+            if dataset_name == "cell_tracking" and cfg.cell_subset_size not in (None, 0):
+                subset_size = cfg.cell_subset_size
+                subset_seed = cfg.cell_subset_seed
+                if subset_size is None or subset_size <= 0:
+                    subset_size = original_min_batch
+                frame_min = min(frame.shape[0] for frame in data)
+                effective_subset = min(subset_size, frame_min)
+
+                rng = None
+                if subset_seed is not None:
+                    rng = np.random.RandomState(subset_seed)
+
+                subset_frames = []
+                for frame in data:
+                    if effective_subset >= frame.shape[0]:
+                        subset_frames.append(frame)
+                        continue
+
+                    if rng is None:
+                        idx_np = np.random.choice(frame.shape[0], effective_subset, replace=False)
+                    else:
+                        idx_np = rng.choice(frame.shape[0], effective_subset, replace=False)
+                    idx = torch.from_numpy(idx_np).to(frame.device)
+                    subset_frames.append(frame.index_select(0, idx))
+
+                train_frames = subset_frames
+
+                if cfg.verbose:
+                    print(
+                        f"[debug] Using cell subset of size {effective_subset} per timestep for seed {seed}"
+                    )
+                if wandb_run:
+                    wandb_run.log(
+                        {
+                            "data/cell_subset_size": effective_subset,
+                            "train/seed": seed,
+                        }
+                    )
+
+            train_frames_device = [frame.to(device) for frame in train_frames]
+            metric_samples_device = torch.cat(train_frames_device, dim=0)
+
+            train_min_batch = min(frame.shape[0] for frame in train_frames)
+            current_batch_size = min(cfg.batch_size, train_min_batch)
 
             if dataset_name == "rotating_mnist":
                 geopath_net = TrainableInterpolantMNIST(
@@ -764,20 +820,20 @@ def main(cfg: TrainConfig) -> None:
             if total_geopath_steps > 0 and len(list(geopath_net.parameters())) > 0:
                 if cfg.verbose:
                     print(
-                        f"[debug] Starting GeoPath training for {total_geopath_steps} steps (batch={cfg.batch_size})"
+                        f"[debug] Starting GeoPath training for {total_geopath_steps} steps (batch={current_batch_size})"
                     )
                 geopath_loss = train_geopath(
                     flow_matcher,
                     geopath_optimizer,
-                    data,
+                    train_frames_device,
                     times,
                     cfg.gamma,
                     cfg.rho,
                     total_geopath_steps,
-                    cfg.batch_size,
+                    current_batch_size,
                     ot_sampler,
                     data_metric,
-                    metric_samples=metric_samples_full,
+                    metric_samples=metric_samples_device,
                     log_shapes=cfg.verbose,
                     wandb_run=wandb_run,
                     seed=seed,
@@ -800,20 +856,24 @@ def main(cfg: TrainConfig) -> None:
             if total_flow_steps > 0:
                 if cfg.verbose:
                     print(
-                        f"[debug] Starting flow training for {total_flow_steps} steps (batch={cfg.batch_size})"
+                        f"[debug] Starting flow training for {total_flow_steps} steps (batch={current_batch_size})"
                     )
+                denorm_flow = bool(cfg.normalize_dataset and min_max is not None)
+
                 flow_loss = train_flow(
                     flow_matcher,
                     flow_net,
                     flow_optimizer,
-                    data,
+                    train_frames_device,
                     times,
                     total_flow_steps,
-                    cfg.batch_size,
+                    current_batch_size,
                     ot_sampler,
                     log_shapes=cfg.verbose,
                     wandb_run=wandb_run,
                     seed=seed,
+                    denormalize_inputs=denorm_flow,
+                    min_max=min_max,
                 )
                 print(f"[seed={seed}] Flow loss: {flow_loss:.6f}")
                 if wandb_run and flow_loss is not None:
@@ -836,7 +896,7 @@ def main(cfg: TrainConfig) -> None:
             else:
                 t_eval = torch.linspace(0, 1, cfg.eval_num_timepoints, device=device)
                 
-            X0 = test_data[0]
+            X0 = test_data[0].to(device)
 
             with torch.no_grad():
                 if cfg.normalize_dataset:
@@ -879,6 +939,7 @@ def main(cfg: TrainConfig) -> None:
                     )
                 if cfg.save_plot:
                     traj_path = Path(cfg.save_plot)
+                    traj_path.parent.mkdir(parents=True, exist_ok=True)
                     for fig3d, view_name in trajectory_figures:
                         fig3d.savefig(
                             traj_path.with_name(
@@ -888,6 +949,224 @@ def main(cfg: TrainConfig) -> None:
                         )
                 for fig3d, _ in trajectory_figures:
                     plt.close(fig3d)
+
+                interpolant_figures_norm: List[Tuple[plt.Figure, str]] = []
+                interpolant_figures_denorm: List[Tuple[plt.Figure, str]] = []
+                endpoint_figures_norm: List[plt.Figure] = []
+                endpoint_figures_denorm: List[plt.Figure] = []
+                if flow_matcher.geopath_net is not None and cfg.alpha != 0:
+                    X1 = test_data[-1].to(device)
+                    expected_pairs = 10
+                    if dataset_name == "cell_tracking":
+                        if X0.shape[0] != expected_pairs or X1.shape[0] != expected_pairs:
+                            raise AssertionError(
+                                f"cell_tracking interpolant viz expects exactly {expected_pairs} samples, "
+                                f"found {X0.shape[0]} and {X1.shape[0]}"
+                            )
+                    x0_samples = X0
+                    x1_samples = X1
+                    if ot_sampler is not None:
+                        x0_samples, x1_samples = ot_sampler.sample_plan(
+                            x0_samples,
+                            x1_samples,
+                            replace=True,
+                        )
+
+                    t_min = times[0]
+                    t_max = times[-1]
+                    interp_points: List[torch.Tensor] = []
+                    for t_val in t_eval:
+                            t_vec = (
+                                t_val.expand(x0_samples.shape[0])
+                                .clone()
+                                .to(device=device, dtype=x0_samples.dtype)
+                                .requires_grad_(True)
+                            )
+                            mu_t = flow_matcher.compute_mu_t(
+                                x0_samples,
+                                x1_samples,
+                                t_vec,
+                                t_min,
+                                t_max,
+                            )
+                            interp_points.append(mu_t.detach())
+                        interpolant_traj = torch.stack(interp_points, dim=0)
+                        interpolant_traj_norm = interpolant_traj.detach()
+                        interpolant_traj_denorm = None
+                        if cfg.normalize_dataset and min_max is not None:
+                            interpolant_traj_denorm = denormalize(
+                                interpolant_traj, min_max
+                            ).detach()
+                        interpolant_traj_norm = interpolant_traj_norm.cpu()
+                        if interpolant_traj_denorm is not None:
+                            interpolant_traj_denorm = interpolant_traj_denorm.cpu()
+
+                        times_cpu = t_eval.detach().cpu()
+
+                        # Plot endpoints (normalized)
+                        x0_norm = x0_samples.detach().cpu()
+                        x1_norm = x1_samples.detach().cpu()
+                        fig_endpoints_norm, axes_endpoints_norm = plt.subplots(
+                            1, 2, figsize=(8, 4)
+                        )
+                        axes_endpoints_norm = np.atleast_1d(axes_endpoints_norm)
+                        plot_cell_samples(
+                            axes_endpoints_norm[0],
+                            x0_norm,
+                            "X0 samples (norm)",
+                            color="#1f77b4",
+                        )
+                        plot_cell_samples(
+                            axes_endpoints_norm[1],
+                            x1_norm,
+                            "X1 samples (norm)",
+                            color="#d62728",
+                        )
+                        fig_endpoints_norm.tight_layout()
+                        endpoint_figures_norm.append(fig_endpoints_norm)
+
+                        if interpolant_traj_denorm is not None:
+                            x0_denorm = denormalize(x0_samples, min_max).detach().cpu()
+                            x1_denorm = denormalize(x1_samples, min_max).detach().cpu()
+                            fig_endpoints_denorm, axes_endpoints_denorm = plt.subplots(
+                                1, 2, figsize=(8, 4)
+                            )
+                            axes_endpoints_denorm = np.atleast_1d(axes_endpoints_denorm)
+                            plot_cell_samples(
+                                axes_endpoints_denorm[0],
+                                x0_denorm,
+                                "X0 samples (denorm)",
+                                color="#1f77b4",
+                            )
+                            plot_cell_samples(
+                                axes_endpoints_denorm[1],
+                                x1_denorm,
+                                "X1 samples (denorm)",
+                                color="#d62728",
+                            )
+                            fig_endpoints_denorm.tight_layout()
+                            endpoint_figures_denorm.append(fig_endpoints_denorm)
+
+                        for idx, (elev, azim) in enumerate(views):
+                            fig_norm = plt.figure(figsize=(6, 5))
+                            ax_norm = fig_norm.add_subplot(111, projection="3d")
+                            plot_cell_trajectories_3d(
+                                ax_norm,
+                                interpolant_traj_norm,
+                                times_cpu,
+                                cmap_name="plasma",
+                                elev=elev,
+                                azim=azim,
+                                title="Interpolant trajectories (3D, normalized)",
+                            )
+                            fig_norm.tight_layout()
+                            interpolant_figures_norm.append((fig_norm, f"view{idx}"))
+
+                        if interpolant_traj_denorm is not None:
+                            for idx, (elev, azim) in enumerate(views):
+                                fig_denorm = plt.figure(figsize=(6, 5))
+                                ax_denorm = fig_denorm.add_subplot(111, projection="3d")
+                                plot_cell_trajectories_3d(
+                                    ax_denorm,
+                                    interpolant_traj_denorm,
+                                    times_cpu,
+                                    cmap_name="magma",
+                                    elev=elev,
+                                    azim=azim,
+                                    title="Interpolant trajectories (3D, denormalized)",
+                                )
+                                fig_denorm.tight_layout()
+                                interpolant_figures_denorm.append((fig_denorm, f"view{idx}"))
+
+                if interpolant_figures_norm:
+                    if wandb_run:
+                        wandb_run.log(
+                            {
+                                "eval/interpolants3d_norm": [
+                                    wandb.Image(fig_norm, caption=view_name)
+                                    for fig_norm, view_name in interpolant_figures_norm
+                                ]
+                            }
+                        )
+                    if cfg.save_plot:
+                        interp_path = Path(cfg.save_plot)
+                        interp_path.parent.mkdir(parents=True, exist_ok=True)
+                        for fig_norm, view_name in interpolant_figures_norm:
+                            fig_norm.savefig(
+                                interp_path.with_name(
+                                    f"{interp_path.stem}_interpolants3d_norm_{view_name}{interp_path.suffix}"
+                                ),
+                                dpi=200,
+                            )
+                    for fig_norm, _ in interpolant_figures_norm:
+                        plt.close(fig_norm)
+
+                if interpolant_figures_denorm:
+                    if wandb_run:
+                        wandb_run.log(
+                            {
+                                "eval/interpolants3d_denorm": [
+                                    wandb.Image(fig_denorm, caption=view_name)
+                                    for fig_denorm, view_name in interpolant_figures_denorm
+                                ]
+                            }
+                        )
+                    if cfg.save_plot:
+                        interp_path = Path(cfg.save_plot)
+                        interp_path.parent.mkdir(parents=True, exist_ok=True)
+                        for fig_denorm, view_name in interpolant_figures_denorm:
+                            fig_denorm.savefig(
+                                interp_path.with_name(
+                                    f"{interp_path.stem}_interpolants3d_denorm_{view_name}{interp_path.suffix}"
+                                ),
+                                dpi=200,
+                            )
+                    for fig_denorm, _ in interpolant_figures_denorm:
+                        plt.close(fig_denorm)
+
+                if endpoint_figures_norm:
+                    if wandb_run:
+                        wandb_run.log(
+                            {
+                                "eval/endpoints_norm": [
+                                    wandb.Image(fig) for fig in endpoint_figures_norm
+                                ]
+                            }
+                        )
+                    if cfg.save_plot:
+                        endpoint_path = Path(cfg.save_plot)
+                        endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                        for idx, fig_end in enumerate(endpoint_figures_norm):
+                            fig_end.savefig(
+                                endpoint_path.with_name(
+                                    f"{endpoint_path.stem}_endpoints_norm_{idx}{endpoint_path.suffix}"
+                                ),
+                                dpi=200,
+                            )
+                    for fig_end in endpoint_figures_norm:
+                        plt.close(fig_end)
+
+                if endpoint_figures_denorm:
+                    if wandb_run:
+                        wandb_run.log(
+                            {
+                                "eval/endpoints_denorm": [
+                                    wandb.Image(fig) for fig in endpoint_figures_denorm
+                                ]
+                            }
+                        )
+                    if cfg.save_plot:
+                        endpoint_path = Path(cfg.save_plot)
+                        endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                        for idx, fig_end in enumerate(endpoint_figures_denorm):
+                            fig_end.savefig(
+                                endpoint_path.with_name(
+                                    f"{endpoint_path.stem}_endpoints_denorm_{idx}{endpoint_path.suffix}"
+                                ),
+                                dpi=200,
+                            )
+                    for fig_end in endpoint_figures_denorm:
+                        plt.close(fig_end)
             else:
                 # 2D plot
                 max_panels = min(6, len(test_data) - 1)
@@ -931,6 +1210,7 @@ def main(cfg: TrainConfig) -> None:
                     wandb_run.log({"eval/overlay": wandb.Image(fig_overlay)})
                 if cfg.save_plot:
                     overlay_path = Path(cfg.save_plot)
+                    overlay_path.parent.mkdir(parents=True, exist_ok=True)
                     fig_overlay.savefig(
                         overlay_path.with_name(f"{overlay_path.stem}_overlay{overlay_path.suffix}"),
                         dpi=200,
