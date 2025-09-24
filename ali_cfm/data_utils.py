@@ -74,7 +74,8 @@ def get_dataset(
         name: str, 
         n_data_dims, 
         normalize: bool = True, 
-        whiten: bool = False
+        whiten: bool = False,
+        nicola_path: str = None
     ) -> List[np.ndarray]:
     if name == "cite":
         adata = sc.read_h5ad(DATA_PATH / "op_cite_inputs_0.h5ad")
@@ -122,9 +123,11 @@ def get_dataset(
 
 
     elif name == 'cell_tracking':
-
-        boolean_masks = np.load(
-            "/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy")
+        if nicola_path is None: 
+            boolean_masks = np.load(
+                "/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy")
+        else:
+            boolean_masks = np.load(nicola_path)
 
         X = []
 
@@ -142,7 +145,11 @@ def get_dataset(
         _, X = create_dataset(3, B=10, test=True)
 
     elif name == "ST":
-        ST_img_path = "/home/oskar/phd/interpolnet/Mixture-FMLs/data/ST_images/aligned_spots"
+        if nicola_path is None:
+            ST_img_path = "/home/oskar/phd/interpolnet/Mixture-FMLs/data/ST_images/aligned_spots"
+        else:
+            ST_img_path = nicola_path
+            
         df_u2 = pd.read_csv(f'{ST_img_path}/U2_tumor_coordinates.csv')
         df_u3 = pd.read_csv(f'{ST_img_path}/U3_tumor_coordinates.csv')
         df_u4 = pd.read_csv(f'{ST_img_path}/U4_tumor_coordinates.csv')

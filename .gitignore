@@ -18,6 +18,8 @@ external/
 # data folders
 data/single_cell/
 data/MNIST/
+data/ST/nicola_data/
+artifacts_local/
 
 lightning_logs/
 
