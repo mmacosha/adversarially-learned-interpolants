@@ -213,9 +213,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cell-subset-seed", type=int, default=None)
     parser.add_argument("--piecewise-training", action="store_true")
     parser.add_argument("--whiten", action="store_true")
-    parser.add_argument("--wandb-name", type=str, default=None)
-    parser.add_argument("--wandb-project", type=str, default="mfm-cell")
-    parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--wandb-name", type=str, default="nicola_mfm_cell")
+    parser.add_argument("--wandb-project", type=str, default="mixture-fmls")
+    parser.add_argument("--wandb-entity", type=str, default="mixtures-all-the-way")
     parser.add_argument("--normalize-dataset", action="store_true", default=True)
     return parser.parse_args()
 
@@ -314,6 +314,23 @@ def main() -> None:
         for param in geopath_net.parameters():
             param.requires_grad_(False)
 
+        interpolant_payload = None
+        with torch.enable_grad():
+            t_grid = times
+            x0_all = train_frames[0]
+            x1_all = train_frames[-1]
+            interp_states = []
+            for t_val in t_grid:
+                t_vec = torch.full((x0_all.shape[0],), float(t_val.item()), device=device, requires_grad=True)
+                mu_t = flow_matcher.compute_mu_t(x0_all, x1_all, t_vec, torch.tensor(0.0, device=device), torch.tensor(1.0, device=device))
+                interp_states.append(mu_t.detach().cpu())
+            interpolant_payload = {
+                "t_grid": t_grid.detach().cpu(),
+                "x0": x0_all.detach().cpu(),
+                "x1": x1_all.detach().cpu(),
+                "states": torch.stack(interp_states, dim=0),
+            }
+
         flow_optimizer = Adam(flow_net.parameters(), lr=args.flow_lr)
         if flow_steps > 0:
             flow_loss = train_flow(
@@ -334,9 +351,11 @@ def main() -> None:
             wandb_run.log({"train/flow_loss": flow_loss, "train/seed": seed})
 
         flow_wrapper = flow_model_torch_wrapper(FlowWrapper(flow_net)).to(device)
+        
+        
         node = NeuralODE(flow_wrapper, solver="dopri5", sensitivity="adjoint").to(device)
 
-        start_state = full_data[0]
+        start_state = train_frames[0]
         model_input = denormalize(start_state, min_max) if requires_denorm_flow else start_state
         with torch.no_grad():
             traj = node.trajectory(model_input, t_span=times)
@@ -346,8 +365,10 @@ def main() -> None:
             "seed": seed,
             "times": times.detach().cpu(),
         }
-        for idx_time in range(1, len(full_data)):
-            target_state = denormalize(full_data[idx_time], min_max) if args.normalize_dataset else full_data[idx_time]
+        if interpolant_payload is not None:
+            saved_payload["interpolant"] = interpolant_payload
+        for idx_time in range(1, len(train_frames)):
+            target_state = denormalize(train_frames[idx_time], min_max) if args.normalize_dataset else train_frames[idx_time]
             pred_state = traj[idx_time]
             pred_eval = pred_state if requires_denorm_flow else (denormalize(pred_state, min_max) if args.normalize_dataset else pred_state)
             emd_val = float(compute_emd(target_state, pred_eval))
@@ -369,6 +390,8 @@ def main() -> None:
             )
 
         saved_payload["trajectory"] = traj.detach().cpu()
+        saved_payload["times"] = times.detach().cpu()
+        
         if wandb_run:
             artifact_dir = Path(wandb_run.dir) / "artifacts"
             artifact_dir.mkdir(parents=True, exist_ok=True)

@@ -10,7 +10,6 @@ python train_mfm_st.py \
   --flow-epochs 20   --flow-steps 2500 \
   --gamma 0.20 --rho 5e-4 --alpha-metric 1.0 \
   --piecewise-training \
-  --wandb-name mfm_st_leaveout
 ```
 
 ### Key options
@@ -31,11 +30,10 @@ python train_mfm_cell.py \
   --cell-stack-path cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy \
   --seeds 42 \
   --cell-subset-size 10 \
-  --geopath-epochs 30 --geopath-steps 2500 \
-  --flow-epochs 30   --flow-steps 2500 \
-  --gamma 0.4 --rho 1e-3 --alpha-metric 1.0 \
+  --geopath-epochs 20 --geopath-steps 2000 \
+  --flow-epochs 20   --flow-steps 2000 \
+  --gamma 0.4 --alpha-metric 1.0 \
   --piecewise-training \
-  --wandb-name mfm_cell_subset
 ```
 
 ### Key options

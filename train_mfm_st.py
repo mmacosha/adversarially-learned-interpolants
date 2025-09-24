@@ -32,7 +32,7 @@ from ali_cfm.loggin_and_metrics import compute_emd
 from mfm.flow_matchers.models.mfm import MetricFlowMatcher
 from mfm.geo_metrics.metric_factory import DataManifoldMetric
 from ali_cfm.nets import TrainableInterpolant, MLP
-from mfm.networks.utils import flow_model_torch_wrapper
+from torchcfm.utils import torch_wrapper
 from torchcfm.conditional_flow_matching import OTPlanSampler
 
 
@@ -225,9 +225,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rho", type=float, default=5e-4)
     parser.add_argument("--alpha-metric", type=float, default=1.0)
     parser.add_argument("--piecewise-training", action="store_true")
-    parser.add_argument("--wandb-name", type=str, default=None)
-    parser.add_argument("--wandb-project", type=str, default="mfm-st")
-    parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--wandb-name", type=str, default="nicola_mfm_cst")
+    parser.add_argument("--wandb-project", type=str, default="mixture-fmls")
+    parser.add_argument("--wandb-entity", type=str, default="mixtures-all-the-way")
     parser.add_argument("--normalize-dataset", action="store_true", default=True)
     parser.add_argument("--eval-segment-points", type=int, default=101)
     return parser.parse_args()
@@ -349,7 +349,7 @@ def main() -> None:
                     }
                 )
 
-            flow_wrapper = flow_model_torch_wrapper(FlowWrapper(flow_net)).to(device)
+            flow_wrapper = torch_wrapper(flow_net).to(device)
             node = NeuralODE(flow_wrapper, solver="dopri5", sensitivity="adjoint").to(device)
 
             start_state = data_frames[removed_t - 1]
@@ -414,21 +414,6 @@ def main() -> None:
 # -----------------------------------------------------------------------------
 # Simple MLP with time concatenation
 # -----------------------------------------------------------------------------
-
-class FlowWrapper(nn.Module):
-    def __init__(self, base: nn.Module):
-        super().__init__()
-        self.base = base
-
-    def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        if t.dim() == 0:
-            t = t.expand(x.shape[0])
-        if t.dim() == 1:
-            t = t[:, None]
-        if t.shape[0] != x.shape[0]:
-            t = t.expand(x.shape[0], -1)
-        return self.base(torch.cat([x, t], dim=-1))
-
 
 if __name__ == "__main__":
     main()
