@@ -39,6 +39,7 @@ os.environ.setdefault("NUMBA_CACHE_DIR", NUMBA_CACHE_DIR)
 
 from ali_cfm.data_utils import denormalize, denormalize_gradfield, get_dataset
 from ali_cfm.nets import CorrectionUNet, MLP, TrainableInterpolant, TrainableInterpolantMNIST
+from ali_cfm.loggin_and_metrics import compute_emd
 from mfm.flow_matchers.models.mfm import MetricFlowMatcher
 from mfm.geo_metrics.metric_factory import DataManifoldMetric
 from mfm.networks.geopath_networks.mlp import GeoPathMLP
@@ -58,14 +59,6 @@ def default_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
     return "cpu"
-
-
-def compute_emd(p1: torch.Tensor, p2: torch.Tensor, device: Union[torch.device, str] = "cpu") -> float:
-    a_weights = torch.ones((p1.shape[0],), device=device) / p1.shape[0]
-    b_weights = torch.ones((p2.shape[0],), device=device) / p2.shape[0]
-
-    M = pot.dist(p1, p2).sqrt()
-    return float(pot.emd2(a_weights, b_weights, M, numItermax=1e7))
 
 
 def fix_seed(seed: int = 42) -> None:
