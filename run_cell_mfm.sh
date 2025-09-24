@@ -28,7 +28,7 @@ COMMON_ARGS=(
 )
 
 run_job() {
-  local seed="$1" gamma="$2" geopath_lr="$3" flow_lr="$4" name_suffix="$5"
+  local seed="$1" gamma="$2" geopath_lr="$3" flow_lr="$4" name_suffix="$5" extra_args="$6"
   local wandb_name="mfm_celltrack_s${seed}_${name_suffix}"
   local log_dir="logs"
   local out_dir="outputs/${wandb_name}"
@@ -45,13 +45,17 @@ run_job() {
     --wandb-name "$wandb_name" \
     --save-plot "${out_dir}/cell_mfm_eval.png" \
     --checkpoint-dir "$ckpt_dir" \
+    ${extra_args} \
     >"${log_dir}/run_${wandb_name}.log" 2>&1 &
 }
 
-# run_job 42 0.4 1e-4 1e-4 "gamma_0.4"
-# run_job 42 0.3 1e-4 1e-4 "gamma_0.3"
-# run_job 42 0.1 1e-4 1e-4 "gamma_0.1"
-run_job 42 0.9 1e-4 1e-4 "gamma_0.9"
+# Example sweeps; uncomment the variants you need.
+run_job 42 0.4 1e-4 1e-4 "gamma_0.4_land" "--metric-velocity land --piecewise-training"
+run_job 42 0.4 1e-4 1e-4 "gamma_0.4_land" "--metric-velocity land"
 
 wait
 echo "All MFM jobs finished."
+
+# Single run:
+
+# python rotating_MNIST/train_mfm.py --dataset cell_tracking --cell-stack-path cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy --cell-subset-size 10 --geopath-epochs 30 --geopath-steps 2500 --flow-epochs 30 --flow-steps 2500 --gamma 0.4 --geopath-lr 1e-4 --flow-lr 1e-4 --seeds 42 --metric-velocity land --piecewise-training --wandb-name mfm_celltrack_s42_gamma_0.4_land --save-plot outputs/mfm_celltrack_s42_gamma_0.4_land/cell_mfm_eval.png --checkpoint-dir checkpoints/mfm_celltrack_s42_gamma_0.4_land --device mps
