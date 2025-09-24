@@ -22,10 +22,7 @@ EXTERNAL_DIR = REPO_ROOT / "external" / "metric-flow-matching"
 if EXTERNAL_DIR.exists() and str(EXTERNAL_DIR) not in sys.path:
     sys.path.append(str(EXTERNAL_DIR))
 
-try:
-    import wandb
-except ImportError:  # pragma: no cover
-    wandb = None
+import wandb
 
 from ali_cfm.data_utils import denormalize, denormalize_gradfield, get_dataset
 from ali_cfm.training.training_utils import sample_x_batch
@@ -177,7 +174,7 @@ def train_flow(
             xt = denormalize(xt, min_max)
             ut = denormalize_gradfield(ut, min_max)
 
-        vt = flow_net(t, xt)
+        vt = flow_net(torch.cat([xt, t], dim=-1))
         loss = torch.mean((vt - ut) ** 2)
         loss.backward()
         optimizer.step()
@@ -336,7 +333,7 @@ def main() -> None:
             )
             wandb_run.log({"train/flow_loss": flow_loss, "train/seed": seed})
 
-        flow_wrapper = flow_model_torch_wrapper(FlowAdapter(flow_net)).to(device)
+        flow_wrapper = flow_model_torch_wrapper(FlowWrapper(flow_net)).to(device)
         node = NeuralODE(flow_wrapper, solver="dopri5", sensitivity="adjoint").to(device)
 
         start_state = full_data[0]
@@ -383,17 +380,19 @@ def main() -> None:
         wandb_run.finish()
 
 
-class FlowAdapter(nn.Module):
+class FlowWrapper(nn.Module):
     def __init__(self, base: nn.Module):
         super().__init__()
         self.base = base
 
     def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if t.dim() == 0:
-            t = t.unsqueeze(0)
+            t = t.expand(x.shape[0])
         if t.dim() == 1:
             t = t[:, None]
-        return self.base(t, x)
+        if t.shape[0] != x.shape[0]:
+            t = t.expand(x.shape[0], -1)
+        return self.base(torch.cat([x, t], dim=-1))
 
 
 if __name__ == "__main__":

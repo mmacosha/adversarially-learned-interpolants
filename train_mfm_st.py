@@ -74,6 +74,9 @@ def train_geopath(
     removed_t: Optional[int],
     log_interval: int = 250,
 ) -> float:
+    if piecewise:
+        print('Running in piecewise mode')
+    
     geopath_net: nn.Module = flow_matcher.geopath_net
     geopath_net.train()
 
@@ -181,7 +184,7 @@ def train_flow(
         if t.dim() == 1:
             t = t[:, None]
 
-        vt = flow_net(t, xt)
+        vt = flow_net(torch.cat([xt, t], dim=-1))
         loss = torch.mean((vt - ut) ** 2)
         loss.backward()
         optimizer.step()
@@ -249,14 +252,14 @@ def main() -> None:
         gamma_current=args.gamma,
         rho=args.rho,
         velocity_metric="land",
-        # n_centers=100,
-        # kappa=0.5,
-        # metric_epochs=0,
-        # metric_patience=10,
-        # metric_lr=1e-3,
+        n_centers=100,
+        kappa=0.5,
+        metric_epochs=0,
+        metric_patience=10,
+        metric_lr=1e-3,
         alpha_metric=args.alpha_metric,
         data_type="trajectory",
-        # accelerator="cpu",
+        accelerator="cpu",
     )
     data_metric = DataManifoldMetric(metric_args, skipped_time_points=None, datamodule=None)
     ot_sampler = OTPlanSampler(method="exact")
@@ -346,7 +349,7 @@ def main() -> None:
                     }
                 )
 
-            flow_wrapper = flow_model_torch_wrapper(FlowAdapter(flow_net)).to(device)
+            flow_wrapper = flow_model_torch_wrapper(FlowWrapper(flow_net)).to(device)
             node = NeuralODE(flow_wrapper, solver="dopri5", sensitivity="adjoint").to(device)
 
             start_state = data_frames[removed_t - 1]
@@ -412,17 +415,19 @@ def main() -> None:
 # Simple MLP with time concatenation
 # -----------------------------------------------------------------------------
 
-class FlowAdapter(nn.Module):
+class FlowWrapper(nn.Module):
     def __init__(self, base: nn.Module):
         super().__init__()
         self.base = base
 
     def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if t.dim() == 0:
-            t = t.unsqueeze(0)
+            t = t.expand(x.shape[0])
         if t.dim() == 1:
             t = t[:, None]
-        return self.base(t, x)
+        if t.shape[0] != x.shape[0]:
+            t = t.expand(x.shape[0], -1)
+        return self.base(torch.cat([x, t], dim=-1))
 
 
 if __name__ == "__main__":
