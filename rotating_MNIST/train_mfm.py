@@ -134,6 +134,7 @@ class TrainConfig:
     save_checkpoints: bool = True
     checkpoint_dir: Optional[str] = None
     st_data_dir: Optional[str] = None
+    piecewise_training: bool = False
 
 def _sample_endpoint_pairs(
     start: torch.Tensor,
@@ -176,11 +177,12 @@ def train_geopath(
     ot_sampler: Optional[OTPlanSampler],
     data_metric: DataManifoldMetric,
     *,
-    metric_samples: torch.Tensor,
+    metric_samples: Union[torch.Tensor, Sequence[torch.Tensor]],
     log_shapes: bool = False,
     wandb_run: Optional[Any] = None,
     log_interval: int = 500,
     seed: Optional[int] = None,
+    piecewise: bool = False,
 ) -> float:
     geopath_net: nn.Module = flow_matcher.geopath_net
     geopath_net.train()
@@ -189,14 +191,38 @@ def train_geopath(
         raise ValueError("GeoPath training requires at least two timesteps of data")
 
     total_loss = 0.0
-    start_data = data[0]
-    end_data = data[-1]
-    t_min = times[0]
-    t_max = times[-1]
-    metric_samples = metric_samples.detach()
+    if piecewise:
+        num_segments = len(data) - 1
+        if num_segments <= 0:
+            raise ValueError("Piecewise training requires at least two timesteps")
+        if not isinstance(metric_samples, Sequence):
+            metric_samples_sequence = [
+                torch.cat([data[i], data[i + 1]], dim=0).detach()
+                for i in range(num_segments)
+            ]
+        else:
+            metric_samples_sequence = list(metric_samples)
+    else:
+        start_data = data[0]
+        end_data = data[-1]
+        t_min = times[0]
+        t_max = times[-1]
+        metric_samples_tensor = metric_samples.detach()
 
     for step_idx in trange(steps, desc="Training GeoPath", leave=False):
         optimizer.zero_grad()
+            
+
+        if piecewise:
+            seg_idx = random.randrange(len(data) - 1)
+            start_data = data[seg_idx]
+            end_data = data[seg_idx + 1]
+            t_min = times[seg_idx]
+            t_max = times[seg_idx + 1]
+            seg_metric_samples = metric_samples_sequence[seg_idx].detach()
+        else:
+            seg_idx = 0
+            seg_metric_samples = metric_samples_tensor
 
         x0, x1 = _sample_endpoint_pairs(start_data, end_data, batch_size)
 
@@ -205,6 +231,7 @@ def train_geopath(
 
         x0 = x0.to(start_data.device)
         x1 = x1.to(end_data.device)
+        seg_metric_samples = seg_metric_samples.to(start_data.device)
 
         t, xt, ut = flow_matcher.sample_location_and_conditional_flow(
             x0,
@@ -227,14 +254,14 @@ def train_geopath(
                 "ut",
                 tuple(ut.shape),
                 "metric",
-                tuple(metric_samples.shape),
+                tuple(seg_metric_samples.shape),
             )
 
         velocity = data_metric.calculate_velocity(
             xt,
             ut,
-            metric_samples,
-            timestep=0, # doesn't matter for land metric 
+            seg_metric_samples,
+            timestep=seg_idx,
         )
 
         loss = torch.mean(velocity ** 2)
@@ -271,6 +298,7 @@ def train_flow(
     seed: Optional[int] = None,
     denormalize_inputs: bool = False,
     min_max: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    piecewise: bool = False,
 ) -> float:
     flow_net.train()
 
@@ -278,19 +306,32 @@ def train_flow(
     if len(data) < 2:
         raise ValueError("Flow training requires at least two timesteps of data")
 
+    if piecewise and len(data) < 2:
+        raise ValueError("Piecewise training requires at least two timesteps")
+
     for step_idx in trange(steps, desc="Training Flow", leave=False):
         optimizer.zero_grad()
 
-        x0, x1 = _sample_endpoint_pairs(data[0], data[-1], batch_size)
+        if piecewise:
+            seg_idx = random.randrange(len(data) - 1)
+            start_data = data[seg_idx]
+            end_data = data[seg_idx + 1]
+            t_min = times[seg_idx]
+            t_max = times[seg_idx + 1]
+        else:
+            seg_idx = 0
+            start_data = data[0]
+            end_data = data[-1]
+            t_min = times[0]
+            t_max = times[-1]
+
+        x0, x1 = _sample_endpoint_pairs(start_data, end_data, batch_size)
 
         if ot_sampler is not None:
             x0, x1 = ot_sampler.sample_plan(x0, x1, replace=True)
 
-        x0 = x0.to(data[0].device)
-        x1 = x1.to(data[-1].device)
-
-        t_min = times[0]
-        t_max = times[-1]
+        x0 = x0.to(start_data.device)
+        x1 = x1.to(end_data.device)
         t, xt, ut = flow_matcher.sample_location_and_conditional_flow(
             x0,
             x1,
@@ -300,7 +341,9 @@ def train_flow(
 
         if log_shapes and step_idx == 0:
             print(
-                "[Flow ] pair 0 ->",
+                "[Flow ] seg",
+                seg_idx,
+                "of",
                 len(data) - 1,
                 "| x0",
                 tuple(x0.shape),
@@ -749,6 +792,12 @@ def main(cfg: TrainConfig) -> None:
 
             train_frames_device = [frame.to(device) for frame in train_frames]
             metric_samples_device = torch.cat(train_frames_device, dim=0)
+            metric_samples_segments: Optional[List[torch.Tensor]] = None
+            if cfg.piecewise_training and len(train_frames_device) >= 2:
+                metric_samples_segments = [
+                    torch.cat([train_frames_device[i], train_frames_device[i + 1]], dim=0)
+                    for i in range(len(train_frames_device) - 1)
+                ]
 
             train_min_batch = min(frame.shape[0] for frame in train_frames)
             current_batch_size = min(cfg.batch_size, train_min_batch)
@@ -826,10 +875,15 @@ def main(cfg: TrainConfig) -> None:
                     current_batch_size,
                     ot_sampler,
                     data_metric,
-                    metric_samples=metric_samples_device,
+                    metric_samples=(
+                        metric_samples_segments
+                        if cfg.piecewise_training and metric_samples_segments is not None
+                        else metric_samples_device
+                    ),
                     log_shapes=cfg.verbose,
                     wandb_run=wandb_run,
                     seed=seed,
+                    piecewise=cfg.piecewise_training,
                 )
                 print(f"[seed={seed}] GeoPath loss: {geopath_loss:.6f}")
                 if wandb_run and geopath_loss is not None:
@@ -867,6 +921,7 @@ def main(cfg: TrainConfig) -> None:
                     seed=seed,
                     denormalize_inputs=denorm_flow,
                     min_max=min_max,
+                    piecewise=cfg.piecewise_training,
                 )
                 print(f"[seed={seed}] Flow loss: {flow_loss:.6f}")
                 if wandb_run and flow_loss is not None:
@@ -1310,9 +1365,12 @@ def parse_config() -> TrainConfig:
     parser.add_argument("--save-checkpoints", dest="save_checkpoints", action="store_true", help="Save model checkpoints")
     parser.add_argument("--no-save-checkpoints", dest="save_checkpoints", action="store_false", help="Skip saving model checkpoints")
     parser.add_argument("--st-data-dir", type=str, default=None, help="Directory containing ST CSV files")
+    parser.add_argument("--piecewise-training", dest="piecewise_training", action="store_true", help="Use per-timestep training (piecewise geodesics)")
+    parser.add_argument("--no-piecewise-training", dest="piecewise_training", action="store_false", help="Disable per-timestep training")
     parser.set_defaults(
         normalize_dataset=cfg.normalize_dataset,
         save_checkpoints=cfg.save_checkpoints,
+        piecewise_training=cfg.piecewise_training,
     )
 
     args = parser.parse_args()
@@ -1400,6 +1458,7 @@ def parse_config() -> TrainConfig:
     cfg.save_checkpoints = args.save_checkpoints
     if args.st_data_dir is not None:
         cfg.st_data_dir = args.st_data_dir
+    cfg.piecewise_training = args.piecewise_training
     
     print(cfg.cell_stack_path)
         
