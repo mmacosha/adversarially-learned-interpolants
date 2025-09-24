@@ -17,8 +17,8 @@ COMMON_ARGS=(
   rotating_MNIST/train_mfm.py
   --dataset st
   --st-data-dir data/ST/nicola_data
-  --geopath-epochs 20 --geopath-steps 2500
-  --flow-epochs 20   --flow-steps 2500
+  --geopath-epochs 20 --geopath-steps 1
+  --flow-epochs 20   --flow-steps 1
   --device mps
   --save-checkpoints
 )
@@ -49,9 +49,9 @@ run_job() {
 mkdir -p logs outputs checkpoints
 
 run_job 42 0.20 5e-4 1e-4 2e-4 "gamma0.20_rho5e-4" "--metric-velocity land"
-run_job 42 0.20 5e-4 1e-4 2e-4 "gamma0.20_rho5e-4_piecewise" "--metric-velocity land --piecewise-training"
-run_job 48 0.20 5e-4 1e-4 2e-4 "gamma0.20_rho5e-4" "--metric-velocity land"
-run_job 48 0.20 5e-4 1e-4 2e-4 "gamma0.20_rho5e-4_piecewise" "--metric-velocity land --piecewise-training"
+# run_job 42 0.20 5e-4 1e-4 2e-4 "gamma0.20_rho5e-4_piecewise" "--metric-velocity land --piecewise-training"
+# run_job 48 0.20 5e-4 1e-4 2e-4 "gamma0.20_rho5e-4" "--metric-velocity land"
+# run_job 48 0.20 5e-4 1e-4 2e-4 "gamma0.20_rho5e-4_piecewise" "--metric-velocity land --piecewise-training"
 
 
 

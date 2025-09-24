@@ -948,415 +948,67 @@ def main(cfg: TrainConfig) -> None:
             else:
                 t_eval = torch.linspace(0, 1, cfg.eval_num_timepoints, device=device)
 
-            def _prepare_for_model(frame: torch.Tensor) -> torch.Tensor:
-                if cfg.normalize_dataset and denorm_flow:
-                    return denormalize(frame, min_max)
-                return frame
-
-            def _to_eval_scale(tensor: torch.Tensor) -> torch.Tensor:
-                if cfg.normalize_dataset and not denorm_flow:
-                    return denormalize(tensor, min_max)
-                return tensor
-
-            if dataset_name == "st":
-                predicted_states = []
-                base_frame = test_data[0].to(device)
-                base_eval = _to_eval_scale(_prepare_for_model(base_frame))
-                predicted_states.append(base_eval)
+            if dataset_name == "cell_tracking":
+                start_state = test_data[0].to(device)
+                model_input = (
+                    denormalize(start_state, min_max)
+                    if cfg.normalize_dataset and denorm_flow
+                    else start_state
+                )
+                with torch.no_grad():
+                    traj = node.trajectory(model_input, t_span=t_eval)
+            else:
+                preds = [test_data[0].to(device)]
                 for idx_time in range(1, len(test_data)):
-                    start_frame = test_data[idx_time - 1].to(device)
-                    t_start = float(t_eval[idx_time - 1].item())
-                    t_end = float(t_eval[idx_time].item())
-                    segment_span = torch.linspace(
-                        t_start,
-                        t_end,
+                    start_state = test_data[idx_time - 1].to(device)
+                    span = torch.linspace(
+                        float(t_eval[idx_time - 1].item()),
+                        float(t_eval[idx_time].item()),
                         cfg.eval_num_timepoints,
                         device=device,
                     )
                     with torch.no_grad():
-                        seg_traj = node.trajectory(
-                            _prepare_for_model(start_frame),
-                            t_span=segment_span,
-                        )
-                    predicted_states.append(_to_eval_scale(seg_traj[-1]))
-                traj = torch.stack(predicted_states, dim=0)
-            else:
-                X0 = test_data[0].to(device)
-                with torch.no_grad():
-                    traj_model = node.trajectory(
-                        _prepare_for_model(X0),
-                        t_span=t_eval,
-                    )
-                traj = _to_eval_scale(traj_model)
+                        seg_traj = node.trajectory(start_state, t_span=span)
+                    preds.append(seg_traj[-1])
+                traj = torch.stack(preds, dim=0)
 
             emd_values: List[float] = []
-            if dataset_name == "cell_tracking":
-                # 3D plot
-                from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+            for idx_time in range(len(test_data)):
+                target = test_data[idx_time].to(device)
+                pred = traj[idx_time].to(device)
 
-                trajectory_figures = []
-                views = [
-                    (30.0, -60.0),
-                    (45.0, -45.0),
-                    (20.0, 45.0),
-                ]
-                for idx, (elev, azim) in enumerate(views):
-                    fig3d = plt.figure(figsize=(6, 5))
-                    ax3d = fig3d.add_subplot(111, projection="3d")
-                    plot_cell_trajectories_3d(
-                        ax3d,
-                        traj,
-                        t_eval,
-                        elev=elev,
-                        azim=azim,
-                    )
-                    fig3d.tight_layout()
-                    trajectory_figures.append((fig3d, f"view{idx}"))
-
-                if wandb_run:
-                    wandb_run.log(
-                        {
-                            "eval/trajectories_3d": [
-                                wandb.Image(fig3d, caption=view_name)
-                                for fig3d, view_name in trajectory_figures
-                            ]
-                        }
-                    )
-                if cfg.save_plot:
-                    traj_path = Path(cfg.save_plot)
-                    traj_path.parent.mkdir(parents=True, exist_ok=True)
-                    for fig3d, view_name in trajectory_figures:
-                        fig3d.savefig(
-                            traj_path.with_name(
-                                f"{traj_path.stem}_trajectories3d_{view_name}{traj_path.suffix}"
-                            ),
-                            dpi=200,
-                        )
-                for fig3d, _ in trajectory_figures:
-                    plt.close(fig3d)
-
-                interpolant_figures_norm: List[Tuple[plt.Figure, str]] = []
-                interpolant_figures_denorm: List[Tuple[plt.Figure, str]] = []
-                endpoint_figures_norm: List[plt.Figure] = []
-                endpoint_figures_denorm: List[plt.Figure] = []
-                if flow_matcher.geopath_net is not None and cfg.alpha != 0:
-                    X1 = test_data[-1].to(device)
-                    expected_pairs = 10
-                    if dataset_name == "cell_tracking":
-                        if X0.shape[0] != expected_pairs or X1.shape[0] != expected_pairs:
-                            raise AssertionError(
-                                f"cell_tracking interpolant viz expects exactly {expected_pairs} samples, "
-                                f"found {X0.shape[0]} and {X1.shape[0]}"
-                            )
-                    x0_samples = X0
-                    x1_samples = X1
-                    if ot_sampler is not None:
-                        x0_samples, x1_samples = ot_sampler.sample_plan(
-                            x0_samples,
-                            x1_samples,
-                            replace=True,
-                        )
-
-                    t_min = times[0]
-                    t_max = times[-1]
-                    interp_points: List[torch.Tensor] = []
-                    for t_val in t_eval:
-                        t_vec = (
-                            t_val.expand(x0_samples.shape[0])
-                            .clone()
-                            .to(device=device, dtype=x0_samples.dtype)
-                            .requires_grad_(True)
-                        )
-                        mu_t = flow_matcher.compute_mu_t(
-                            x0_samples,
-                            x1_samples,
-                            t_vec,
-                            t_min,
-                            t_max,
-                        )
-                        interp_points.append(mu_t.detach())
-                    interpolant_traj = torch.stack(interp_points, dim=0)
-                    interpolant_traj_norm = interpolant_traj.detach()
-                    interpolant_traj_denorm = None
-                    if cfg.normalize_dataset and min_max is not None:
-                        interpolant_traj_denorm = denormalize(
-                            interpolant_traj, min_max
-                        ).detach()
-                    interpolant_traj_norm = interpolant_traj_norm.cpu()
-                    if interpolant_traj_denorm is not None:
-                        interpolant_traj_denorm = interpolant_traj_denorm.cpu()
-
-                    times_cpu = t_eval.detach().cpu()
-
-                    # Plot endpoints (normalized)
-                    x0_norm = x0_samples.detach().cpu()
-                    x1_norm = x1_samples.detach().cpu()
-                    fig_endpoints_norm, axes_endpoints_norm = plt.subplots(
-                        1, 2, figsize=(8, 4)
-                    )
-                    axes_endpoints_norm = np.atleast_1d(axes_endpoints_norm)
-                    plot_cell_samples(
-                        axes_endpoints_norm[0],
-                        x0_norm,
-                        "X0 samples (norm)",
-                        color="#1f77b4",
-                    )
-                    plot_cell_samples(
-                        axes_endpoints_norm[1],
-                        x1_norm,
-                        "X1 samples (norm)",
-                        color="#d62728",
-                    )
-                    fig_endpoints_norm.tight_layout()
-                    endpoint_figures_norm.append(fig_endpoints_norm)
-
-                    if interpolant_traj_denorm is not None:
-                        x0_denorm = denormalize(x0_samples, min_max).detach().cpu()
-                        x1_denorm = denormalize(x1_samples, min_max).detach().cpu()
-                        fig_endpoints_denorm, axes_endpoints_denorm = plt.subplots(
-                            1, 2, figsize=(8, 4)
-                        )
-                        axes_endpoints_denorm = np.atleast_1d(axes_endpoints_denorm)
-                        plot_cell_samples(
-                            axes_endpoints_denorm[0],
-                            x0_denorm,
-                            "X0 samples (denorm)",
-                            color="#1f77b4",
-                        )
-                        plot_cell_samples(
-                            axes_endpoints_denorm[1],
-                            x1_denorm,
-                            "X1 samples (denorm)",
-                            color="#d62728",
-                        )
-                        fig_endpoints_denorm.tight_layout()
-                        endpoint_figures_denorm.append(fig_endpoints_denorm)
-
-                    for idx, (elev, azim) in enumerate(views):
-                        fig_norm = plt.figure(figsize=(6, 5))
-                        ax_norm = fig_norm.add_subplot(111, projection="3d")
-                        plot_cell_trajectories_3d(
-                            ax_norm,
-                            interpolant_traj_norm,
-                            times_cpu,
-                            cmap_name="plasma",
-                            elev=elev,
-                            azim=azim,
-                            title="Interpolant trajectories (3D, normalized)",
-                        )
-                        fig_norm.tight_layout()
-                        interpolant_figures_norm.append((fig_norm, f"view{idx}"))
-
-                    if interpolant_traj_denorm is not None:
-                        for idx, (elev, azim) in enumerate(views):
-                            fig_denorm = plt.figure(figsize=(6, 5))
-                            ax_denorm = fig_denorm.add_subplot(111, projection="3d")
-                            plot_cell_trajectories_3d(
-                                ax_denorm,
-                                interpolant_traj_denorm,
-                                times_cpu,
-                                cmap_name="magma",
-                                elev=elev,
-                                azim=azim,
-                                title="Interpolant trajectories (3D, denormalized)",
-                            )
-                            fig_denorm.tight_layout()
-                            interpolant_figures_denorm.append((fig_denorm, f"view{idx}"))
-
-                if interpolant_figures_norm:
-                    if wandb_run:
-                        wandb_run.log(
-                            {
-                                "eval/interpolants3d_norm": [
-                                    wandb.Image(fig_norm, caption=view_name)
-                                    for fig_norm, view_name in interpolant_figures_norm
-                                ]
-                            }
-                        )
-                    if cfg.save_plot:
-                        interp_path = Path(cfg.save_plot)
-                        interp_path.parent.mkdir(parents=True, exist_ok=True)
-                        for fig_norm, view_name in interpolant_figures_norm:
-                            fig_norm.savefig(
-                                interp_path.with_name(
-                                    f"{interp_path.stem}_interpolants3d_norm_{view_name}{interp_path.suffix}"
-                                ),
-                                dpi=200,
-                            )
-                    for fig_norm, _ in interpolant_figures_norm:
-                        plt.close(fig_norm)
-
-                if interpolant_figures_denorm:
-                    if wandb_run:
-                        wandb_run.log(
-                            {
-                                "eval/interpolants3d_denorm": [
-                                    wandb.Image(fig_denorm, caption=view_name)
-                                    for fig_denorm, view_name in interpolant_figures_denorm
-                                ]
-                            }
-                        )
-                    if cfg.save_plot:
-                        interp_path = Path(cfg.save_plot)
-                        interp_path.parent.mkdir(parents=True, exist_ok=True)
-                        for fig_denorm, view_name in interpolant_figures_denorm:
-                            fig_denorm.savefig(
-                                interp_path.with_name(
-                                    f"{interp_path.stem}_interpolants3d_denorm_{view_name}{interp_path.suffix}"
-                                ),
-                                dpi=200,
-                            )
-                    for fig_denorm, _ in interpolant_figures_denorm:
-                        plt.close(fig_denorm)
-
-                if endpoint_figures_norm:
-                    if wandb_run:
-                        wandb_run.log(
-                            {
-                                "eval/endpoints_norm": [
-                                    wandb.Image(fig) for fig in endpoint_figures_norm
-                                ]
-                            }
-                        )
-                    if cfg.save_plot:
-                        endpoint_path = Path(cfg.save_plot)
-                        endpoint_path.parent.mkdir(parents=True, exist_ok=True)
-                        for idx, fig_end in enumerate(endpoint_figures_norm):
-                            fig_end.savefig(
-                                endpoint_path.with_name(
-                                    f"{endpoint_path.stem}_endpoints_norm_{idx}{endpoint_path.suffix}"
-                                ),
-                                dpi=200,
-                            )
-                    for fig_end in endpoint_figures_norm:
-                        plt.close(fig_end)
-
-                if endpoint_figures_denorm:
-                    if wandb_run:
-                        wandb_run.log(
-                            {
-                                "eval/endpoints_denorm": [
-                                    wandb.Image(fig) for fig in endpoint_figures_denorm
-                                ]
-                            }
-                        )
-                    if cfg.save_plot:
-                        endpoint_path = Path(cfg.save_plot)
-                        endpoint_path.parent.mkdir(parents=True, exist_ok=True)
-                        for idx, fig_end in enumerate(endpoint_figures_denorm):
-                            fig_end.savefig(
-                                endpoint_path.with_name(
-                                    f"{endpoint_path.stem}_endpoints_denorm_{idx}{endpoint_path.suffix}"
-                                ),
-                                dpi=200,
-                            )
-                    for fig_end in endpoint_figures_denorm:
-                        plt.close(fig_end)
-            else:
-                # 2D plot
-                max_panels = min(6, len(test_data) - 1)
-                panel_indices = (
-                    np.linspace(1, len(test_data) - 1, num=max_panels, dtype=int)
-                    if max_panels > 0
-                    else np.array([], dtype=int)
-                )
-                panel_indices = np.unique(panel_indices)
-                if len(panel_indices) == 0:
-                    panel_indices = np.array([len(test_data) - 1], dtype=int)
-
-                fig_overlay, axes_overlay = plt.subplots(
-                    1, len(panel_indices), figsize=(4 * len(panel_indices), 4)
-                )
-                axes_overlay = np.atleast_1d(axes_overlay)
-
-                for col, idx_time in enumerate(panel_indices):
-                    t_target = times[idx_time]
-                    idx = torch.argmin(torch.abs(t_eval - t_target)).item()
-                    pred = traj[idx].float().cpu()
-                    if cfg.normalize_dataset:
-                        target = denormalize(test_data[idx_time], min_max).cpu()
+                if cfg.normalize_dataset:
+                    target_eval = denormalize(target, min_max)
+                    if denorm_flow and dataset_name == "cell_tracking":
+                        pred_eval = pred
                     else:
-                        target = test_data[idx_time].cpu()
-                    emd_val = float(compute_emd(target.to(device), pred.to(device), device=device))
-                    emd_values.append(emd_val)
+                        pred_eval = denormalize(pred, min_max)
+                else:
+                    target_eval = target
+                    pred_eval = pred
 
-                    ax = axes_overlay[col]
-                    ax.scatter(target[:, 0], target[:, 1], s=10, c="red", alpha=0.4, label="target" if col == 0 else None)
-                    ax.scatter(pred[:, 0], pred[:, 1], s=10, c="blue", alpha=0.7, label="prediction" if col == 0 else None)
-                    ax.set_title(f"t={t_target.item():.2f}, EMD={emd_val:.3f}")
-                    ax.set_aspect("equal")
-                    ax.axis("off")
-                if len(panel_indices) > 0:
-                    axes_overlay[0].legend(frameon=False, loc="upper right")
-
-                fig_overlay.tight_layout()
-
-                if wandb_run:
-                    wandb_run.log({"eval/overlay": wandb.Image(fig_overlay)})
-                if cfg.save_plot:
-                    overlay_path = Path(cfg.save_plot)
-                    overlay_path.parent.mkdir(parents=True, exist_ok=True)
-                    fig_overlay.savefig(
-                        overlay_path.with_name(f"{overlay_path.stem}_overlay{overlay_path.suffix}"),
-                        dpi=200,
-                    )
-                plt.close(fig_overlay)
+                emd_val = float(compute_emd(target_eval, pred_eval))
+                emd_values.append(emd_val)
+                if cfg.verbose:
+                    print(f"[eval] seed={seed} t={idx_time}: EMD={emd_val:.6f}")
 
             if wandb_run and emd_values:
                 emd_array = np.array(emd_values, dtype=float)
-                if np.any(np.isnan(emd_array)) or np.any(np.isinf(emd_array)):
+                invalid_mask = ~np.isfinite(emd_array)
+                if invalid_mask.any():
                     print(
                         f"[warn] seed={seed}: invalid EMD values detected",
                         emd_array.tolist(),
                     )
-                else:
-                    wandb_run.log(
-                        {
-                            "eval/emd_mean": float(np.mean(emd_array)),
-                            "eval/emd_std": float(np.std(emd_array)),
-                            "eval/seed": seed,
-                        }
-                    )
-
-            if wandb_run is not None:
-                artifact_dir = Path(wandb_run.dir) / "artifacts"
-                artifact_dir.mkdir(parents=True, exist_ok=True)
-                traj_artifact_path = artifact_dir / f"{(cfg.wandb_name or 'mfm_model')}_seed{seed}_traj.pt"
-                torch.save(
+                wandb_run.log(
                     {
-                        "trajectory": traj.detach().cpu(),
-                        "t_eval": t_eval.detach().cpu(),
-                        "times": times.detach().cpu(),
-                        "seed": seed,
-                        "config": asdict(cfg),
-                    },
-                    traj_artifact_path,
+                        "eval/emd_mean": float(np.nanmean(emd_array)),
+                        "eval/emd_std": float(np.nanstd(emd_array)),
+                        "eval/emd_invalid_count": int(invalid_mask.sum()),
+                        "eval/seed": seed,
+                    }
                 )
-                wandb_run.save(str(traj_artifact_path), policy="now")
 
-            if cfg.save_checkpoints:
-                if cfg.checkpoint_dir is not None:
-                    ckpt_dir = Path(cfg.checkpoint_dir)
-                elif wandb_run is not None:
-                    ckpt_dir = Path(wandb_run.dir) / "checkpoints"
-                else:
-                    ckpt_dir = Path("checkpoints")
-
-                prefix = cfg.wandb_name or "mfm_model"
-                ckpt_path = _save_model_checkpoint(
-                    ckpt_dir,
-                    prefix,
-                    seed,
-                    geopath_net,
-                    flow_net,
-                    cfg,
-                    times,
-                    min_max,
-                )
-                if cfg.verbose:
-                    print(f"[info] Saved checkpoint to {ckpt_path}")
-                if wandb_run is not None:
-                    wandb_run.save(str(ckpt_path), policy="now")
     finally:
         if wandb_run is not None:
             wandb_run.finish()
