@@ -91,7 +91,7 @@ class TrainConfig:
     flow_steps_per_epoch: int = 500
     flow_lr: float = 1e-4
 
-    gamma: float = 0.4
+    gamma: float = 0.2
     rho: float = 1e-3
     alpha_metric: float = 1.0
 
@@ -969,107 +969,107 @@ def main(cfg: TrainConfig) -> None:
                     t_max = times[-1]
                     interp_points: List[torch.Tensor] = []
                     for t_val in t_eval:
-                            t_vec = (
-                                t_val.expand(x0_samples.shape[0])
-                                .clone()
-                                .to(device=device, dtype=x0_samples.dtype)
-                                .requires_grad_(True)
-                            )
-                            mu_t = flow_matcher.compute_mu_t(
-                                x0_samples,
-                                x1_samples,
-                                t_vec,
-                                t_min,
-                                t_max,
-                            )
-                            interp_points.append(mu_t.detach())
-                        interpolant_traj = torch.stack(interp_points, dim=0)
-                        interpolant_traj_norm = interpolant_traj.detach()
-                        interpolant_traj_denorm = None
-                        if cfg.normalize_dataset and min_max is not None:
-                            interpolant_traj_denorm = denormalize(
-                                interpolant_traj, min_max
-                            ).detach()
-                        interpolant_traj_norm = interpolant_traj_norm.cpu()
-                        if interpolant_traj_denorm is not None:
-                            interpolant_traj_denorm = interpolant_traj_denorm.cpu()
+                        t_vec = (
+                            t_val.expand(x0_samples.shape[0])
+                            .clone()
+                            .to(device=device, dtype=x0_samples.dtype)
+                            .requires_grad_(True)
+                        )
+                        mu_t = flow_matcher.compute_mu_t(
+                            x0_samples,
+                            x1_samples,
+                            t_vec,
+                            t_min,
+                            t_max,
+                        )
+                        interp_points.append(mu_t.detach())
+                    interpolant_traj = torch.stack(interp_points, dim=0)
+                    interpolant_traj_norm = interpolant_traj.detach()
+                    interpolant_traj_denorm = None
+                    if cfg.normalize_dataset and min_max is not None:
+                        interpolant_traj_denorm = denormalize(
+                            interpolant_traj, min_max
+                        ).detach()
+                    interpolant_traj_norm = interpolant_traj_norm.cpu()
+                    if interpolant_traj_denorm is not None:
+                        interpolant_traj_denorm = interpolant_traj_denorm.cpu()
 
-                        times_cpu = t_eval.detach().cpu()
+                    times_cpu = t_eval.detach().cpu()
 
-                        # Plot endpoints (normalized)
-                        x0_norm = x0_samples.detach().cpu()
-                        x1_norm = x1_samples.detach().cpu()
-                        fig_endpoints_norm, axes_endpoints_norm = plt.subplots(
+                    # Plot endpoints (normalized)
+                    x0_norm = x0_samples.detach().cpu()
+                    x1_norm = x1_samples.detach().cpu()
+                    fig_endpoints_norm, axes_endpoints_norm = plt.subplots(
+                        1, 2, figsize=(8, 4)
+                    )
+                    axes_endpoints_norm = np.atleast_1d(axes_endpoints_norm)
+                    plot_cell_samples(
+                        axes_endpoints_norm[0],
+                        x0_norm,
+                        "X0 samples (norm)",
+                        color="#1f77b4",
+                    )
+                    plot_cell_samples(
+                        axes_endpoints_norm[1],
+                        x1_norm,
+                        "X1 samples (norm)",
+                        color="#d62728",
+                    )
+                    fig_endpoints_norm.tight_layout()
+                    endpoint_figures_norm.append(fig_endpoints_norm)
+
+                    if interpolant_traj_denorm is not None:
+                        x0_denorm = denormalize(x0_samples, min_max).detach().cpu()
+                        x1_denorm = denormalize(x1_samples, min_max).detach().cpu()
+                        fig_endpoints_denorm, axes_endpoints_denorm = plt.subplots(
                             1, 2, figsize=(8, 4)
                         )
-                        axes_endpoints_norm = np.atleast_1d(axes_endpoints_norm)
+                        axes_endpoints_denorm = np.atleast_1d(axes_endpoints_denorm)
                         plot_cell_samples(
-                            axes_endpoints_norm[0],
-                            x0_norm,
-                            "X0 samples (norm)",
+                            axes_endpoints_denorm[0],
+                            x0_denorm,
+                            "X0 samples (denorm)",
                             color="#1f77b4",
                         )
                         plot_cell_samples(
-                            axes_endpoints_norm[1],
-                            x1_norm,
-                            "X1 samples (norm)",
+                            axes_endpoints_denorm[1],
+                            x1_denorm,
+                            "X1 samples (denorm)",
                             color="#d62728",
                         )
-                        fig_endpoints_norm.tight_layout()
-                        endpoint_figures_norm.append(fig_endpoints_norm)
+                        fig_endpoints_denorm.tight_layout()
+                        endpoint_figures_denorm.append(fig_endpoints_denorm)
 
-                        if interpolant_traj_denorm is not None:
-                            x0_denorm = denormalize(x0_samples, min_max).detach().cpu()
-                            x1_denorm = denormalize(x1_samples, min_max).detach().cpu()
-                            fig_endpoints_denorm, axes_endpoints_denorm = plt.subplots(
-                                1, 2, figsize=(8, 4)
-                            )
-                            axes_endpoints_denorm = np.atleast_1d(axes_endpoints_denorm)
-                            plot_cell_samples(
-                                axes_endpoints_denorm[0],
-                                x0_denorm,
-                                "X0 samples (denorm)",
-                                color="#1f77b4",
-                            )
-                            plot_cell_samples(
-                                axes_endpoints_denorm[1],
-                                x1_denorm,
-                                "X1 samples (denorm)",
-                                color="#d62728",
-                            )
-                            fig_endpoints_denorm.tight_layout()
-                            endpoint_figures_denorm.append(fig_endpoints_denorm)
+                    for idx, (elev, azim) in enumerate(views):
+                        fig_norm = plt.figure(figsize=(6, 5))
+                        ax_norm = fig_norm.add_subplot(111, projection="3d")
+                        plot_cell_trajectories_3d(
+                            ax_norm,
+                            interpolant_traj_norm,
+                            times_cpu,
+                            cmap_name="plasma",
+                            elev=elev,
+                            azim=azim,
+                            title="Interpolant trajectories (3D, normalized)",
+                        )
+                        fig_norm.tight_layout()
+                        interpolant_figures_norm.append((fig_norm, f"view{idx}"))
 
+                    if interpolant_traj_denorm is not None:
                         for idx, (elev, azim) in enumerate(views):
-                            fig_norm = plt.figure(figsize=(6, 5))
-                            ax_norm = fig_norm.add_subplot(111, projection="3d")
+                            fig_denorm = plt.figure(figsize=(6, 5))
+                            ax_denorm = fig_denorm.add_subplot(111, projection="3d")
                             plot_cell_trajectories_3d(
-                                ax_norm,
-                                interpolant_traj_norm,
+                                ax_denorm,
+                                interpolant_traj_denorm,
                                 times_cpu,
-                                cmap_name="plasma",
+                                cmap_name="magma",
                                 elev=elev,
                                 azim=azim,
-                                title="Interpolant trajectories (3D, normalized)",
+                                title="Interpolant trajectories (3D, denormalized)",
                             )
-                            fig_norm.tight_layout()
-                            interpolant_figures_norm.append((fig_norm, f"view{idx}"))
-
-                        if interpolant_traj_denorm is not None:
-                            for idx, (elev, azim) in enumerate(views):
-                                fig_denorm = plt.figure(figsize=(6, 5))
-                                ax_denorm = fig_denorm.add_subplot(111, projection="3d")
-                                plot_cell_trajectories_3d(
-                                    ax_denorm,
-                                    interpolant_traj_denorm,
-                                    times_cpu,
-                                    cmap_name="magma",
-                                    elev=elev,
-                                    azim=azim,
-                                    title="Interpolant trajectories (3D, denormalized)",
-                                )
-                                fig_denorm.tight_layout()
-                                interpolant_figures_denorm.append((fig_denorm, f"view{idx}"))
+                            fig_denorm.tight_layout()
+                            interpolant_figures_denorm.append((fig_denorm, f"view{idx}"))
 
                 if interpolant_figures_norm:
                     if wandb_run:
