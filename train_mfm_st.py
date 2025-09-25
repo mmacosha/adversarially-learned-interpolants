@@ -225,7 +225,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rho", type=float, default=5e-4)
     parser.add_argument("--alpha-metric", type=float, default=1.0)
     parser.add_argument("--piecewise-training", action="store_true")
-    parser.add_argument("--wandb-name", type=str, default="nicola_mfm_cst")
+    parser.add_argument("--wandb-name", type=str, default="nicola_mfm_cst_new")
     parser.add_argument("--wandb-project", type=str, default="mixture-fmls")
     parser.add_argument("--wandb-entity", type=str, default="mixtures-all-the-way")
     parser.add_argument("--normalize-dataset", action="store_true", default=True)
@@ -354,12 +354,14 @@ def main() -> None:
 
             start_state = data_frames[removed_t - 1]
             target_state = data_frames[removed_t]
+            
             span = torch.linspace(
                 float(normalized_times[removed_t - 1].item()),
                 float(normalized_times[removed_t].item()),
                 args.eval_segment_points,
                 device=device,
             )
+            
             with torch.no_grad():
                 seg_traj = node.trajectory(start_state, t_span=span)
             pred_state = seg_traj[-1]

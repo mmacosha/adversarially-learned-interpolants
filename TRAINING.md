@@ -6,8 +6,8 @@
 python train_mfm_st.py \
   --st-data-dir data/ST/nicola_data \
   --seeds 42 \
-  --geopath-epochs 20 --geopath-steps 2500 \
-  --flow-epochs 20   --flow-steps 2500 \
+  --geopath-epochs 30 --geopath-steps 2500 \
+  --flow-epochs 30   --flow-steps 2500 \
   --gamma 0.20 --rho 5e-4 --alpha-metric 1.0 \
   --piecewise-training \
 ```
