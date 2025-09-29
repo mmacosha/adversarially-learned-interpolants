@@ -48,7 +48,7 @@ def train_interpolant_with_gan(
     gan_optimizer_G, gan_optimizer_D, n_epochs,
     gan_batch_size, correct_coeff, train_timesteps, seed, min_max,
     ot='none', plot_freaquency=5000, metric_prefix="", compute_emd_flag=True,
-    device='cpu', gan_loss='vanilla', plot_fn=utils.sc_plot_fn,
+    device='cpu', gan_loss='vanilla', plot_fn=utils.sc_plot_fn, st=False
 ):
     t_max = max(train_timesteps)
     curr_epoch = 0
@@ -62,15 +62,15 @@ def train_interpolant_with_gan(
         #     gan_optimizer_D.param_groups[0]['lr'] = 5e-6
         
         curr_epoch += 1
-        if (epoch % 5_000 == 0) and compute_emd_flag:
+        if (epoch % 5_00 == 0) and compute_emd_flag:
             with torch.no_grad():
-                for time in range(1, 4):
+                for time in range(1, 3):
                     test_batch = utils.sample_gan_batch(
-                        data, 2300, 
+                        data, 256,
                         divisor=t_max,
                         ot_sampler=ot_sampler, 
                         time=time, 
-                        ot='border'
+                        ot=ot
                     )
                     x0_test, x1_test, xt_test, t_test = (
                         x.to(device) for x in test_batch
@@ -150,10 +150,36 @@ def train_interpolant_with_gan(
             fake_proba = discriminator(fake_inputs)
 
             g_loss_ = torch.nn.functional.softplus(-fake_proba).mean()
-        
-        reg_weight_loss = interpolant.get_reg_term(x0, x1, t, xt_fake, xt)
+
+        if st:
+            t = torch.rand(x0.shape[0], 1, device=device)
+            xt_fake = interpolant(x0, x1, t, training=False)
+
+            coupled_x = torch.stack([x0, xt, x1], dim=1) # (B, 3, D)
+            bs, K, d = coupled_x.shape
+            times = torch.tensor(train_timesteps, device=device) / t_max
+
+            idx = torch.bucketize(t, times) - 1
+            idx = idx.clamp(0, K - 2)  # keep in valid range
+
+            t0 = times[idx]  # (bs,)
+            t1 = times[idx + 1]  # (bs,)
+            denom = (t1 - t0)  # (bs,)
+
+            a = (t1 - t) / denom
+            b = (t - t0) / denom
+
+            # Select endpoints for each batch element
+            x0 = coupled_x[torch.arange(bs), idx]  # (bs, d)
+            x1 = coupled_x[torch.arange(bs), idx + 1]  # (bs, d)
+
+            xhat_t = a.unsqueeze(-1) * x0 + b.unsqueeze(-1) * x1
+            reg_weight_loss = ((xt_fake - xhat_t) ** 2).mean()
+
+        else:
+            reg_weight_loss = interpolant.get_reg_term(x0, x1, t, xt_fake, xt)
+
         g_loss = g_loss_ + correct_coeff * reg_weight_loss
-        
         g_loss.backward()
         gan_optimizer_G.step()
 

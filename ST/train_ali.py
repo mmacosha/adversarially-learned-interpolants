@@ -110,12 +110,12 @@ def train_ali(cfg):
             pretrain_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=1e-3)
 
             discriminator = Discriminator(
-                cfg.dim + 1, cfg.net_hidden, apply_sigmoid=False
+                cfg.dim + 1, 64, apply_sigmoid=False
             ).to(cfg.device)
             gan_optimizer_G = torch.optim.Adam(interpolant.parameters(), lr=cfg.lr_G)
             gan_optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=cfg.lr_D)
 
-            ot_cfm_model = MLP(dim=cfg.dim, time_varying=True, w=cfg.net_hidden).to(cfg.device)
+            ot_cfm_model = MLP(dim=cfg.dim, time_varying=True, w=cfg.cfm_dim).to(cfg.device)
             ot_cfm_optimizer = torch.optim.Adam(ot_cfm_model.parameters(), cfg.lr_CFM)
 
             if cfg.train_interpolants:
@@ -143,7 +143,7 @@ def train_ali(cfg):
                     cfg.n_epochs, cfg.batch_size, cfg.correct_coeff,
                     curr_timesteps, seed, min_max, ot=cfg.interpolant_ot,
                     metric_prefix=interpolant_metric_prefix,
-                    device=cfg.device, gan_loss=cfg.gan_loss, plot_fn=plot_fn, compute_emd_flag=True
+                    device=cfg.device, gan_loss=cfg.gan_loss, plot_fn=plot_fn, compute_emd_flag=True, st=True
                 )
 
                 checkpoint = {
@@ -155,8 +155,7 @@ def train_ali(cfg):
                 )
                 torch.save(checkpoint, save_path)
             else:
-                PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/rotating_MNIST/wandb/"
-                        "run-20250915_145507-2k36hqa2/files/checkpoints")
+                PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/ST/wandb/run-20250922_121917-wst28r8p/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 interpolant.load_state_dict(load_checkpoint['interpolant'])
 
@@ -183,8 +182,7 @@ def train_ali(cfg):
                 )
                 torch.save(checkpoint, save_path)
             else:
-                PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/rotating_MNIST/wandb"
-                        "/run-20250915_155452-15yae40c/files/checkpoints")
+                PATH = ("/home/oskar/phd/interpolnet/Mixture-FMLs/ST/wandb/run-20250922_121917-wst28r8p/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
@@ -195,7 +193,8 @@ def train_ali(cfg):
 
             t_s = torch.linspace((removed_t - 1) / max(timesteps_list), removed_t / max(timesteps_list), 101)
             with torch.no_grad():
-                cfm_traj = node.trajectory(data[removed_t - 1],
+                X0 = torch.tensor(data[removed_t - 1], dtype=torch.float32).to(cfg.device)
+                cfm_traj = node.trajectory(X0,
                                            t_s
                                            )
 
@@ -205,7 +204,13 @@ def train_ali(cfg):
             )
             cfm_results[f"seed={seed}"].append(cfm_emd.item())
 
+            wandb.log({
+                f"{metric_prefix}_cfm/cfm_result": cfm_emd.item()
+            })
 
+            fig, ax = plt.subplots(figsize=(6,6))
+            pl.overlay_spot_coordinates(denormalize(cfm_traj[-1], min_max).cpu(), removed_t, ax)
+            plt.show()
 
     wandb.finish()
 
@@ -213,4 +218,14 @@ def train_ali(cfg):
 if __name__ == "__main__":
     with initialize(config_path="./configs"):
         cfg = compose(config_name="ali.yaml")
+        # for loss in ["vanilla", "R3GAN"]:
+        #     cfg.gan_loss = loss
+        #     for correct_coeff in [0.001, 0.01, 0.1, 1.0, 10.0]:
+        #         cfg.correct_coeff = correct_coeff
+        #         for interpolant_ot in ['border', 'mmot']:
+        #             cfg.interpolant_ot = interpolant_ot
+        #             cfg.cfm_ot = interpolant_ot
+        #             for lr in [1e-4, 5e-4, 1e-3]:
+        #                 cfg.lr_G = lr
+        #                 cfg.lr_D = lr
         train_ali(cfg)

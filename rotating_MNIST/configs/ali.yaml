@@ -1,0 +1,38 @@
+wandb_name: ali_cfm
+wandb_mode: online
+saved_run_dir: none
+seed_list: [42]
+
+dim: 256
+net_hidden: 1024
+n_data_dims: ${dim}
+whiten: false
+dataset: RotatingMNIST
+normalize_dataset: false
+device: cuda:0
+batch_size: 128
+correct_coeff: 1.
+t_smooth: 0.01
+
+pretain_ot: none
+interpolant_ot: none
+cfm_ot: none
+
+lr_G: 1e-4
+lr_D: 5e-5
+lr_CFM: 1e-3
+
+n_pretrain_epochs: 0
+n_epochs: 70_001
+n_ot_cfm_epochs: 10_001
+num_int_steps_per_timestep: 500
+use_pca: false
+gan_loss: vanilla
+regulariser: regression
+
+train_interpolants: False
+train_cfm: False
+
+hydra:
+  run:
+    dir: .

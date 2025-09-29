@@ -134,8 +134,8 @@ def main(cfg, wandb_run=None):
     data, min_max = get_dataset("ST", cfg.n_data_dims, normalize=cfg.normalize_dataset)
     timesteps_list = [t for t in range(len(data))]
 
-    #pl = Plotter("../data/ST_images/ref_U5_warped_images",
-    #             [t / 3 for t in range(len(data))], coordinate_scaling=1)
+    pl = Plotter("../data/ST_images/ref_U5_warped_images",
+                [t / 3 for t in range(len(data))], coordinate_scaling=1)
     #plot_fn = pl.plot_fn
     interpolant = cfg.interpolant
 
@@ -182,7 +182,7 @@ def main(cfg, wandb_run=None):
                 )
                 torch.save(checkpoint, save_path)
             else:
-                PATH = (f"/Users/oskarkviman/Documents/phd/mixture_FM_loss/ST/wandb/{wandb_run}/files/checkpoints")
+                PATH = (f"/home/oskar/phd/interpolnet/Mixture-FMLs/ST/wandb/{wandb_run}/files/checkpoints")
                 load_checkpoint = torch.load(PATH + f"/{metric_prefix}_ali_cfm.pth", weights_only=True)
                 ot_cfm_model.load_state_dict(load_checkpoint['ot_cfm_model'])
 
@@ -202,6 +202,10 @@ def main(cfg, wandb_run=None):
                 denormalize(cfm_traj[-1], min_max).to(cfg.device),
             )
             cfm_results[f"seed={seed}"].append(cfm_emd.item())
+
+            fig, ax = plt.subplots(figsize=(6, 6))
+            pl.overlay_spot_coordinates(denormalize(cfm_traj[-1], min_max).cpu(), removed_t, ax)
+            plt.show()
 
     print("t = 1")
     print(np.mean([cfm_results[f"seed={seed}"][0] for seed in cfg.seed_list]),
