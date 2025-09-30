@@ -1,6 +1,12 @@
 # logs and packages
 wandb/
+logs/
+checkpoints/
+training_visualizations/
+*.png
+.matplotlib_cache/
 env/
+external/
 
 # Python aux files
 **/.DS_Store
@@ -11,3 +17,17 @@ env/
 
 # data folders
 data/single_cell/
+<<<<<<< HEAD
+=======
+data/MNIST/
+data/ST/nicola_data/
+artifacts_local/
+
+lightning_logs/
+
+results/
+
+cell_tracking/data/
+
+cell_tracking/exports/
+>>>>>>> oskar_training_cell_tracking

@@ -5,8 +5,10 @@ import torch
 import numpy as np
 import scanpy as sc
 from typing import List
+import pandas as pd
 
 from sklearn.preprocessing import StandardScaler
+from rotating_MNIST.create_dataset import create_dataset
 
 
 # DATA_PATH = Path("/home/oskar/phd/interpolnet/Mixture-FMLs/Mixture-FMLs-kirill_single_cell_experiments/data")
@@ -72,7 +74,8 @@ def get_dataset(
         name: str, 
         n_data_dims, 
         normalize: bool = True, 
-        whiten: bool = False
+        whiten: bool = False,
+        nicola_path: str = None
     ) -> List[np.ndarray]:
     if name == "cite":
         adata = sc.read_h5ad(DATA_PATH / "op_cite_inputs_0.h5ad")
@@ -118,9 +121,46 @@ def get_dataset(
             data[adata.obs["sample_labels"].cat.codes == t] for t in range(n_times)
         ]
 
+
     elif name == 'cell_tracking':
-        boolean_masks = np.load("/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy")
-        X = [np.argwhere(boolean_masks[i]) for i in range(boolean_masks.shape[0])]
+        if nicola_path is None: 
+            boolean_masks = np.load(
+                "/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/exports/Cell4_masks/mask_cell4_stack.npy")
+        else:
+            boolean_masks = np.load(nicola_path)
+
+        X = []
+
+        for i in range(boolean_masks.shape[0]):
+            coords = np.argwhere(boolean_masks[i])  # (y, x)
+
+            coords = coords[:, [1, 0]]  # swap -> (x, y)
+
+            X.append(coords)
+
+    elif name == 'RotatingMNIST_train':
+        X, _ = create_dataset(3, B=100, test=False)
+
+    elif name == 'RotatingMNIST_test':
+        _, X = create_dataset(3, B=10, test=True)
+
+    elif name == "ST":
+        if nicola_path is None:
+            ST_img_path = "/home/oskar/phd/interpolnet/Mixture-FMLs/data/ST_images/aligned_spots"
+        else:
+            ST_img_path = nicola_path
+            
+        df_u2 = pd.read_csv(f'{ST_img_path}/U2_tumor_coordinates.csv')
+        df_u3 = pd.read_csv(f'{ST_img_path}/U3_tumor_coordinates.csv')
+        df_u4 = pd.read_csv(f'{ST_img_path}/U4_tumor_coordinates.csv')
+        df_u5 = pd.read_csv(f'{ST_img_path}/U5_tumor_coordinates.csv')
+
+        X0 = np.array(df_u2.iloc[:, -2:].values, dtype=np.float32)
+        Xt1 = np.array(df_u3.iloc[:, -2:].values, dtype=np.float32)
+        Xt2 = np.array(df_u4.iloc[:, -2:].values, dtype=np.float32)
+        X1 = np.array(df_u5.iloc[:, -2:].values, dtype=np.float32)
+
+        X = [X0, Xt1, Xt2, X1]
 
     else:
         raise ValueError(f"Unknown dataset {name}")
@@ -136,3 +176,6 @@ def get_dataset(
         return Xn, (min_, max_)
     else:
         return X, None
+
+
+

@@ -4,11 +4,13 @@ from pathlib import Path
 import numpy as np
 import imageio.v2 as imageio
 
+from typing import List, Optional
+
 def save_cell_masks(
     mask_dir: str,
     cell_label: int,
     out_dir: str,
-    frames: list[int] | None = None,
+    frames: Optional[List[int]] = None,
     save_npy: bool = True,
     save_tif: bool = False,
     save_stack: bool = True,

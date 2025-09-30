@@ -4,9 +4,6 @@ import torch
 import torch.nn.functional as F
 from tqdm.auto import trange
 
-from matplotlib import pyplot as plt
-from sklearn.decomposition import PCA
-
 from ali_cfm.loggin_and_metrics import compute_emd
 from ali_cfm.data_utils import denormalize
 
@@ -33,6 +30,9 @@ def pretain_interpolant(
         x0, x1, xt, t = (x.to(cfg.device) for x in batch)
         xt_fake = interpolant(x0, x1, t)
 
+        # if mnist:
+        #     loss = (xt_fake - xt).abs().mean()
+        
         loss = (xt_fake - xt).pow(2).mean()
         loss.backward()
 
@@ -48,6 +48,7 @@ def train_interpolant_with_gan(
     gan_optimizer_G, gan_optimizer_D, metric_prefix,
     train_timesteps, seed, min_max, cfg,
     plot_freaquency=5000,
+    plot_fn=utils.sc_plot_fn
 ):
     t_max = max(train_timesteps)
     curr_epoch = 0
@@ -55,15 +56,15 @@ def train_interpolant_with_gan(
                         desc="Training GAN Interpolant", leave=False):
         
         curr_epoch += 1
-        if epoch % 5_000 == 0:
+        if (epoch % 5_00 == 0) and compute_emd_flag:
             with torch.no_grad():
                 for time in range(1, train_timesteps[-1]):
                     test_batch = utils.sample_gan_batch(
-                        data, 2300, 
+                        data, 256,
                         divisor=t_max,
                         ot_sampler=ot_sampler, 
                         time=time, 
-                        ot='border'
+                        ot=ot
                     )
                     x0_test, x1_test, xt_test, t_test = (
                         x.to(cfg.device) for x in test_batch
@@ -155,6 +156,31 @@ def train_interpolant_with_gan(
             g_loss_ = F.softplus(-fake_proba).mean()
         
         match cfg.reg_term_type:
+            case "st":
+                t = torch.rand(x0.shape[0], 1, device=device)
+                xt_fake = interpolant(x0, x1, t, training=False)
+
+                coupled_x = torch.stack([x0, xt, x1], dim=1) # (B, 3, D)
+                bs, K, d = coupled_x.shape
+                times = torch.tensor(train_timesteps, device=device) / t_max
+
+                idx = torch.bucketize(t, times) - 1
+                idx = idx.clamp(0, K - 2)  # keep in valid range
+
+                t0 = times[idx]  # (bs,)
+                t1 = times[idx + 1]  # (bs,)
+                denom = (t1 - t0)  # (bs,)
+
+                a = (t1 - t) / denom
+                b = (t - t0) / denom
+
+                # Select endpoints for each batch element
+                x0 = coupled_x[torch.arange(bs), idx]  # (bs, d)
+                x1 = coupled_x[torch.arange(bs), idx + 1]  # (bs, d)
+
+                xhat_t = a.unsqueeze(-1) * x0 + b.unsqueeze(-1) * x1
+                reg_weight_loss = ((xt_fake - xhat_t) ** 2).mean()
+            
             case "picewise_oskar_version":
                 t = torch.rand(x0.shape[0], 1, device=cfg.device)
                 xt_fake = interpolant(x0, x1, t, training=False)
@@ -223,8 +249,7 @@ def train_interpolant_with_gan(
             case _:
                 raise ValueError(f"Unknown regularization term {cfg.reg_term_type}")
         
-        g_loss = g_loss_ + cfg.correct_coeff * reg_weight_loss
-        
+        g_loss = g_loss_ + cfg.correct_coeff * reg_weight_loss        
         g_loss.backward()
         gan_optimizer_G.step()
 
@@ -239,33 +264,10 @@ def train_interpolant_with_gan(
         })
 
         if epoch % plot_freaquency == 0:
-            with torch.no_grad():
-                batch = utils.sample_gan_batch(
-                    data, 256, 
-                    divisor=t_max, 
-                    ot_sampler=ot_sampler, 
-                    ot='full', 
-                    times=train_timesteps
-                )
-                x0, x1, xt, t = (x.to(cfg.device) for x in batch)
-                xt_fake = interpolant(x0, x1, t)
-
-                pca = PCA(n_components=2, random_state=seed)
-                
-                xt_pca = pca.fit_transform(xt.cpu())
-                xt_fake_pca = pca.transform(xt_fake.cpu())
-                fig = plt.figure()
-                
-                plt.scatter(*xt_fake_pca.T, c='red', alpha=0.5, label="Fake")
-                plt.scatter(*xt_pca.T, c='blue', alpha=0.5, label="Real")
-                plt.legend()
-                plt.title(f"PCA of `True` and `Fake` samples for t={int(t[0] * t_max)}")
-
-                wandb.log({
-                    f"{metric_prefix}/scatter_image": wandb.Image(fig), 
-                    f"{metric_prefix}_step": epoch
-                })
-                plt.close(fig)
+            plot_fn(
+                interpolant, epoch, seed, t_max, data, ot_sampler, device, 
+                metric_prefix, train_timesteps, wandb, min_max
+            )
 
 
 def train_ot_cfm(

@@ -1,4 +1,6 @@
 from pathlib import Path
+from typing import Union
+import numpy as np
 
 import torch
 import pandas as pd
@@ -17,24 +19,6 @@ def compute_emd(p1, p2, device='cpu'):
 
 def compute_window_avg(array, window_size):
     return np.convolve(array, np.ones(window_size), mode='valid') / window_size
-
-
-# def finish_results_table(table, timesteps):
-#     table = pd.DataFrame(table)
-#     mean_row = [{
-#         name: val for name, val 
-#         in zip(table.columns, table.mean(axis=0))
-#     }]
-#     table = pd.concat(
-#         [table, pd.DataFrame(mean_row)], 
-#         ignore_index=True
-#     )
-    
-#     table["mean"] = table.mean(axis=1)
-#     table["std"] = table.std(axis=1)
-#     table['timesteps'] = [f"{t=}" for t in timesteps] + ["AVG"]
-
-#     return table.round(4)
 
 
 def finish_results_table(data, timesteps):
@@ -66,7 +50,7 @@ def finish_results_table(data, timesteps):
     return table
 
 
-def get_run_dir(run_id: str, search_dir: str | Path = './wandb'):
+def get_run_dir(run_id: str, search_dir: Union[str, Path] = './wandb'):
     found_dirs = [*Path(search_dir).glob(f"*{run_id}*")]
     if not found_dirs:
         raise FileNotFoundError(f"No directories found for run_id: {run_id}")

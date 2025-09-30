@@ -1,0 +1,45 @@
+lr_D: 1e-5
+lr_G: 1e-5
+lr_CFM: 1e-3
+
+dataset: ST
+whiten: false
+normalise: true
+
+seed_list: [42, 43, 44, 45, 46]
+n_data_dims: 2
+normalize_dataset: True
+wandb_name: ali_cfm
+wandb_mode: online
+dim: 2
+device: cuda:0
+
+batch_size: 256
+batch_size_cfm: 128
+correct_coeff: 10.
+
+pretrain_lr: 1e-3
+n_pretrain_epochs: 1_001
+net_hidden: 64
+cfm_dim: 128
+
+t_smooth: 0.01
+interpolant_ot: full
+cfm_ot: full
+pretain_ot: full
+
+n_epochs: 70_001
+n_ot_cfm_epochs: 10_001
+use_pca: false
+num_int_steps_per_timestep: 100
+regulariser: piecewise
+
+gan_loss: vanilla
+
+train_cfm: False
+train_interpolants: False
+
+# hudra params
+hydra:
+  run:
+    dir: .
