@@ -48,44 +48,30 @@ Here's how you can install this repository and reproduce the experiments
 # If not, follow the link above to install it or use a package mangaer of your choice.
 
 # 1. Clone the repository into a folder named 'sb' and navigate into it
-git https://github.com/mmacosha/d2e-stochastic-dynamics.git sb
-cd sb
+git https://github.com/mmacosha/adversarially-learnt-interpolants.git ali
+cd ali
 
 # 2. Create a virtual environment using Python 3.11 with uv
-uv venv -n sbenv --python 3.11
+uv venv -n alienv --python 3.10
 
 # 3. Activate the newly created virtual environment
-source ./sbenv/bin/activate
+source ./alienv/bin/activate
 
 # 4. Install the project and all its dependencies in editable mode
 pip install -e .
 ```
 
-## 2D Experiments
-To reproduce 2D experiments you should just to run the scripts located in `sh-scripts/...'. For example:
-```bash
-./sh_scripts/d2d-benchmarks/ablate-d2d-normal_to_gmm.sh 1
-```
-All the experiments suppot `cpu`, `mps` and `cuda` training.
+## Single cell experiments
 
-## Image experiments
-To reproduce image experiments you would need to install the following models
-1. [SN-GAN](https://github.com/GongXinyuu/sngan.pytorch)
-2. [StyleGAN](https://github.com/NVlabs/stylegan3)
-3. [CIFAR-10 Classifier](https://github.com/huyvnphan/PyTorch_CIFAR10)
-<!-- 4. [CelebA Classifier]() -->
 
-All models should be installed into the `sb/external`. It is possible to load these dependences using 
-`git clone --recurse-submodules`, however, some modifications to the code (mostly paths for imports) might be needed.
+## Spatial transcriptomics
 
-The experiments can be run as follows: 
-```bash
-train --cfg=sb-sg --device=0 --wandb=online --name=EXPERIMENT-NAME \
-      --overrides="data.p_1.args.target_classes=[5],sampler.off_policy_fraction=0.8"
-```
+
+## Cell tracking 
+
 
 ## Citation
-Please, cite this work as follows
+Please, cite this work as follows:
 ```
 @misc{kviman@ali,
     author    = {Kviman, Oskar and Tamogashev, Kirill and Branchini, Nicola and Elvira, Víctor and Lagergren, Jens and Malkin, Nikolay},
