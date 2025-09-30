@@ -53,12 +53,6 @@ def train_interpolant_with_gan(
     curr_epoch = 0
     for epoch in trange(curr_epoch, cfg.num_ali_train_steps, 
                         desc="Training GAN Interpolant", leave=False):
-        # if epoch > 40_000:
-        #     gan_optimizer_G.param_groups[0]['lr'] = 1e-5
-        #     gan_optimizer_D.param_groups[0]['lr'] = 5e-5
-        # elif epoch > 100_000:
-        #     gan_optimizer_G.param_groups[0]['lr'] = 1e-6
-        #     gan_optimizer_D.param_groups[0]['lr'] = 5e-6
         
         curr_epoch += 1
         if epoch % 5_000 == 0:
@@ -186,9 +180,9 @@ def train_interpolant_with_gan(
                 xhat_t = a.unsqueeze(-1) * x0 + b.unsqueeze(-1) * x1
                 diff = xt_fake - xhat_t
 
-                if cfg.reg_metric == 'land_norm':
+                if cfg.reg_metric == 'l2':
                     reg_weight_loss = (diff ** 2).mean()
-                elif cfg.reg_metric == 'l1':
+                elif cfg.reg_metric == 'land_norm':
                     xs, ts = get_marginals(xts)
                     G = compute_time_dependent_metric(
                         xhat_t, t, xs, ts, 
@@ -312,5 +306,5 @@ def train_ot_cfm(
         
         wandb.log({
             f"{metric_prefix}/cfm_loss": loss.item(),
-            f"{metric_prefix}_cfm_step": step
+            f"{metric_prefix}_step": step
         })

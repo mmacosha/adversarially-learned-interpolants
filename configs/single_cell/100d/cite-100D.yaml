@@ -1,5 +1,5 @@
 wandb_name: ali_cfm
-wandb_mode: online
+wandb_mode: offline
 saved_run_dir: none
 seed_list: [42, 43, 44, 45, 46]
 device: mps
@@ -23,16 +23,16 @@ cfm_ot: mmot
 
 # training params
 batch_size: 128
-correct_coeff: 5e-10
+correct_coeff: 0.5
 
 num_ali_pretrain_steps: 2001
 pretrain_lr: 1e-3
 
-reg_metric: land_norm
+reg_metric: l2
 land_gamma: 0.0001
 land_t_gamma: 0.0001
 
-reg_term_type: 2nd_derivative
+reg_term_type: picewise_oskar_version
 num_t_steps: 3
 gan_loss: R3GAN
 interpolant_gen_lr: 5e-5

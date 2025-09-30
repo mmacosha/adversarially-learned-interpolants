@@ -190,9 +190,9 @@ def train_ali(cfg):
 
             with torch.no_grad():
                 ot_cfm_traj = node.trajectory(
-                    data[removed_t - 1].to(cfg.device),
+                    data[0].to(cfg.device),
                     t_span=torch.linspace(
-                        start=(removed_t - 1) / max(timesteps_list), 
+                        start=0, 
                         end=removed_t / max(timesteps_list), 
                         steps=cfg.num_int_steps_per_timestep
                     ),
@@ -230,10 +230,6 @@ def train_ali(cfg):
 
     interpolant_W2 = float(cfm_results['res'].values[-1].split('±')[0])
     cfg_W2 = float(int_results['res'].values[-1].split('±')[0])
-    wandb.log({
-        'interpolant_W2': interpolant_W2,
-        'cfg_W2': cfg_W2
-    })
 
     wandb.run.summary['interpolant_W2'] = interpolant_W2
     wandb.run.summary['cfg_W2'] = cfg_W2
