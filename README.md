@@ -10,7 +10,7 @@
 
 ---
 > **Multi-Marginal Flow Matching with Adversarially Learnt Interpolants**<br>
-> Kirill Tamogashev & Nikolay Malkin<br><br>
+> Oskar Kviman, Kirill Tamogashev, Nicola Branchini, Víctor Elvira, Jens Lagergren, Nikolay Malkin<br><br>
 >**Abstract:** Learning the dynamics of a process given sampled observations at several time points is an important but difficult task in many scientific applications. When no ground-truth trajectories are available, but one has only snapshots of data taken at discrete time steps, the problem of modelling the dynamics, and thus inferring the underlying trajectories, can be solved by multi-marginal generalisations of flow matching algorithms. This paper proposes a novel flow matching method that overcomes the limitations of existing multi-marginal trajectory inference algorithms. Our proposed method, ALI-CFM, uses a GAN-inspired adversarial loss to fit neurally parametrised interpolant curves between source and target points such that the marginal distributions at intermediate time points are close to the observed distributions. The resulting interpolants are smooth trajectories that, as we show, are unique under mild assumptions.  These interpolants are subsequently marginalised by a flow matching algorithm, yielding a trained vector field for the underlying dynamics. We showcase the versatility and scalability of our method by outperforming the existing baselines on spatial transcriptomics and cell tracking datasets, while performing on par with them on single-cell trajectory prediction.
 
 ## Project structure
