@@ -26,11 +26,13 @@ import wandb
 
 from ali_cfm.data_utils import denormalize, denormalize_gradfield, get_dataset
 from ali_cfm.training.training_utils import sample_x_batch
+from ali_cfm.nets import TrainableInterpolant, MLP
 from ali_cfm.loggin_and_metrics import compute_emd
+
 from mfm.flow_matchers.models.mfm import MetricFlowMatcher
 from mfm.geo_metrics.metric_factory import DataManifoldMetric
-from ali_cfm.nets import TrainableInterpolant, MLP
 from mfm.networks.utils import flow_model_torch_wrapper
+
 from torchcfm.conditional_flow_matching import OTPlanSampler
 
 

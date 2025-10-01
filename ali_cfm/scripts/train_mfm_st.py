@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional, Sequence
 
+import wandb
 import numpy as np
 import torch
 from torch import nn
@@ -17,23 +18,15 @@ from torch.optim import Adam
 from torchdyn.core import NeuralODE
 from tqdm.auto import trange
 
-REPO_ROOT = Path(__file__).resolve().parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.append(str(REPO_ROOT))
-EXTERNAL_DIR = REPO_ROOT / "external" / "metric-flow-matching"
-if EXTERNAL_DIR.exists() and str(EXTERNAL_DIR) not in sys.path:
-    sys.path.append(str(EXTERNAL_DIR))
-
-import wandb
+from mfm.flow_matchers.models.mfm import MetricFlowMatcher
+from mfm.geo_metrics.metric_factory import DataManifoldMetric
+from torchcfm.utils import torch_wrapper
+from torchcfm.conditional_flow_matching import OTPlanSampler
 
 from ali_cfm.data_utils import denormalize, get_dataset
 from ali_cfm.training.training_utils import sample_x_batch
 from ali_cfm.loggin_and_metrics import compute_emd
-from mfm.flow_matchers.models.mfm import MetricFlowMatcher
-from mfm.geo_metrics.metric_factory import DataManifoldMetric
 from ali_cfm.nets import TrainableInterpolant, MLP
-from torchcfm.utils import torch_wrapper
-from torchcfm.conditional_flow_matching import OTPlanSampler
 
 
 # -----------------------------------------------------------------------------

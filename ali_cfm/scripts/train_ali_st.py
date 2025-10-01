@@ -15,13 +15,11 @@ from torchdyn.core import NeuralODE
 from torchcfm.utils import torch_wrapper
 from torchcfm.conditional_flow_matching import OTPlanSampler
 
-import ali_cfm.training.training_utils as utils
+from ali_cfm.training import training_utils as utils
 from ali_cfm.training.training_funcs import pretain_interpolant, train_interpolant_with_gan
 from ali_cfm.loggin_and_metrics import compute_emd
 from ali_cfm.data_utils import get_dataset, denormalize, denormalize_gradfield
-from utils import Plotter
-
-
+from ali_cfm.spatial_transcriptomics.utils import Plotter
 from ali_cfm.nets import Discriminator, MLP, TrainableInterpolant
 
 
@@ -143,7 +141,11 @@ def train_ali(cfg):
                     cfg.n_epochs, cfg.batch_size, cfg.correct_coeff,
                     curr_timesteps, seed, min_max, ot=cfg.interpolant_ot,
                     metric_prefix=interpolant_metric_prefix,
-                    device=cfg.device, gan_loss=cfg.gan_loss, plot_fn=plot_fn, compute_emd_flag=True, st=True
+                    device=cfg.device, 
+                    gan_loss=cfg.gan_loss, 
+                    plot_fn=plot_fn, 
+                    compute_emd_flag=True, 
+                    st=True
                 )
 
                 checkpoint = {
@@ -194,9 +196,7 @@ def train_ali(cfg):
             t_s = torch.linspace((removed_t - 1) / max(timesteps_list), removed_t / max(timesteps_list), 101)
             with torch.no_grad():
                 X0 = torch.tensor(data[removed_t - 1], dtype=torch.float32).to(cfg.device)
-                cfm_traj = node.trajectory(X0,
-                                           t_s
-                                           )
+                cfm_traj = node.trajectory(X0, t_s)
 
             cfm_emd = compute_emd(
                 denormalize(data[removed_t], min_max).to(cfg.device),

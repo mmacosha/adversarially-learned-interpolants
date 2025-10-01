@@ -3,10 +3,10 @@ import torch
 import os
 import wandb
 import warnings
+import random
+import numpy as np
 from tqdm.auto import trange, tqdm
 from hydra import compose, initialize
-import numpy as np
-import random
 
 from omegaconf import OmegaConf
 
@@ -14,13 +14,14 @@ from torchdyn.core import NeuralODE
 from torchcfm.utils import torch_wrapper
 from torchcfm.conditional_flow_matching import OTPlanSampler
 
-import ali_cfm.training.training_utils as utils
-from ali_cfm.training.training_funcs import pretain_interpolant, train_interpolant_with_gan
-from ali_cfm.loggin_and_metrics import compute_emd
+from ali_cfm.training import training_utils as utils
+from ali_cfm.training.training_funcs import (
+    pretain_interpolant, 
+    train_interpolant_with_gan
+)
+from ali_cfm.cell_tracking.utils import CellOverlayViewer
 from ali_cfm.data_utils import get_dataset, denormalize, denormalize_gradfield
-
-
-from cell_tracking_utils import CellOverlayViewer
+from ali_cfm.loggin_and_metrics import compute_emd
 from ali_cfm.nets import TrainableInterpolant, Discriminator, MLP
 
 
@@ -224,50 +225,14 @@ def train_ali(cfg):
                                        t_span= torch.tensor(timesteps_list, dtype=torch.float32).to(cfg.device) / max(timesteps_list)  # torch.linspace(0, 1, num_int_steps + 1),
                                        )
 
-        # cov.plot_fn(cfm_traj, None, None, max(timesteps_list), data,
-        #             ot_sampler, cfg.device, None, np.array(timesteps_list) / max(timesteps_list),
-        #             None, min_max, method="ali-cfm")
         ckpt = {"trajectory": cfm_traj}
         torch.save(ckpt, "/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/traj_ckpts/ali_cfm_traj.pt")
 
-        # mean_emd = 0
-        # for t in timesteps_list[1:]:
-        #     t_prev = (t - 1) / (len(timesteps_list) - 1)
-        #     t_curr = t / (len(timesteps_list) - 1)
-        #     with torch.no_grad():
-        #         ot_cfm_traj = node.trajectory(
-        #             denormalize(data[t - 1], min_max).to(cfg.device),
-        #             t_span=torch.linspace(t_prev, t_curr, num_int_steps + 1),
-        #         )
-        #         cfm_emd = compute_emd(
-        #             denormalize(data[t], min_max).to(cfg.device),
-        #             ot_cfm_traj[-1].float().to(cfg.device),
-        #         )
-        #         mean_emd += cfm_emd / (len(timesteps_list) - 1)
-        # cfm_results[f"seed={seed}"].append(cfm_emd.item())
-        #
-        # # TODO: plot CFM trajectories and save on wandb
-        #
-        # wandb.log({
-        #     f"{metric_prefix}_cfm/cfm_result": cfm_emd.item()
-        # })
-
-
-
-    # int_results = wandb.Table(
-    #     dataframe=finish_results_table(int_results, timesteps_list[1: -1])
-    # )
-    # wandb.log({"interpolant_results": int_results})
-    #
-    # cfm_results = wandb.Table(
-    #     dataframe=finish_results_table(cfm_results, timesteps_list[1: -1])
-    # )
-    # wandb.log({"cfm_results": cfm_results})
 
     wandb.finish()
 
 
 if __name__ == "__main__":
-    with initialize(config_path="./configs"):
+    with initialize(config_path="../../configs"):
         cfg = compose(config_name="ali.yaml")
         train_ali(cfg)

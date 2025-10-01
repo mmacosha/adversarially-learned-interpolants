@@ -8,6 +8,7 @@ from tqdm.auto import trange, tqdm
 from hydra import compose, initialize
 import numpy as np
 import random
+import scipy
 
 from omegaconf import OmegaConf
 
@@ -15,13 +16,10 @@ from torchdyn.core import NeuralODE
 from torchcfm.utils import torch_wrapper
 from torchcfm.conditional_flow_matching import OTPlanSampler
 
-import ali_cfm.training.training_utils as utils
+from ali_cfm.training import training_utils as utils
 from ali_cfm.loggin_and_metrics import compute_emd
 from ali_cfm.data_utils import get_dataset, denormalize, denormalize_gradfield
-from utils import Plotter
-from scipy import interpolate
-
-
+from ali_cfm.spatial_transcriptomics.utils import Plotter
 from ali_cfm.nets import MLP
 
 
@@ -102,7 +100,7 @@ def train_ot_cfm(
             x = np.array(times) / 3  # (K,)
 
             # vectorized spline fit over (n, 2)
-            splines = interpolate.CubicSpline(x, y, axis=1)  # no loops
+            splines = scipy.interpolate.CubicSpline(x, y, axis=1)  # no loops
 
             t_np = t.squeeze(-1).detach().cpu().numpy()  # (T,)
 

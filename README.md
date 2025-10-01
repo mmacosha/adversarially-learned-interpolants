@@ -15,39 +15,38 @@
 
 ## Project structure
 ```
-energy-sb/
-├── 📜 configs/           # Hydra experiment configs
-├── 🖼️ assets/            # Static assets like images, plots, tables
-├── 🐍 sb/                # Main source code for the Schrödinger Bridge package
-│   ├── data/             # Data modules
-│   ├── buffers/          # Replay buffers for off-policy training
-│   ├── losses/           # Loss functions
-│   ├── nn/               # Neural network architectures
-│   ├── samplers/         # Core training loops and logic
+ali/
+├── 🔬 configs/           # Experiment configs
 │   └── ...
-├── 🚀 py_scripts/        # Executable Python scripts for training and generation
-│   ├── train.py
+├── 💾 data/              
+│   ├── cell_tracking/    # Cell tracking data
+│   ├── single_cell/      # Single cell data
+│   └── st/               # Spatial transcriptomics data
+├── 📖 docs/              # Project documentation
+│   └── TRAINING.md
+├── 🚀 scripts/           # Standalone scripts for running experiments or tasks
 │   └── ...
-├── 셸 sh_scripts/         # Shell scripts for running experiments
+├── ali_cfm/              # Your Python package
+│   ├── scripts           # Scripts for running all the experiments
+│   ├── training/         # Training  logic
 │   └── ...
-├── 🧪 tests/             # Unit and integration tests
-├── 📄 pyproject.toml     # Project configuration and dependencies
-└── 📖 README.md          # Project overview and documentation
+├── 🙈 .gitignore                
+├── 🛠️ pyproject.toml     # Project metadata and build configuration
+└── 👋 README.md          # Your project's welcome page!
 ```
-
 
 ## Installation
 
 Here's how you can install this repository and reproduce the experiments
 
-* Python 3.11+
+* Python 3.10+
 * We use [uv](https://docs.astral.sh/uv/) package manager
 
 ```bash
 # This example assumes that uv is installed. 
 # If not, follow the link above to install it or use a package mangaer of your choice.
 
-# 1. Clone the repository into a folder named 'sb' and navigate into it
+# 1. Clone the repository into a folder named 'ali' and navigate into it
 git https://github.com/mmacosha/adversarially-learnt-interpolants.git ali
 cd ali
 
@@ -63,17 +62,47 @@ pip install -e .
 
 ## Single cell experiments
 
+### Data
+Single cell RNA data can be downloaded with the following [url](https://data.mendeley.com/datasets/hhny5ff7yj/1).
+The webpage contains three files: `ebdata_v3.h5ad`, `op_cite_inputs_0.h5ad`, `op_train_multi_targets_0.h5ad`. In order to reproce single cell experiments you should download the files and save them to `./data/single_cell`.
+
+### Experiments
+```bash
+# Cite 100D
+train_ali_single_cell --config configs/single_cell/100D/cite-100D.yaml
+
+# Cite 50D
+train_ali_single_cell --config configs/single_cell/50D/cite-50D.yaml
+
+# Multi 100D
+train_ali_single_cell --config configs/single_cell/100D/multi-100D.yaml
+
+# Cite 50D
+train_ali_single_cell --config configs/single_cell/50D/multi-50D.yaml
+```
+
+Baselines for the single cell experiments are run using MFM [repository](https://github.com/kksniak/metric-flow-matching/).
 
 ## Spatial transcriptomics
 
+### Data
+TBD
+### Experiments
+TBD
+More details on running baselines for spatial transcriptomics experiments can be found in [here](/docs/TRAINING.md).
 
 ## Cell tracking 
+### Data
+TBD
+### Experiments
+TBD
 
+More details on running baselines for cell tracking experiments can be found in [here](/docs/TRAINING.md).
 
 ## Citation
 Please, cite this work as follows:
 ```
-@misc{kviman@ali,
+@misc{kviman2025adversarial,
     author    = {Kviman, Oskar and Tamogashev, Kirill and Branchini, Nicola and Elvira, Víctor and Lagergren, Jens and Malkin, Nikolay},
     title     = {Multi-Marginal Flow Matching with Adversarially Learnt Interpolants},
     year      = {2025},

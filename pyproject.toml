@@ -1,32 +1,53 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=61.0"] # Using a more recent setuptools version is good practice
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "interpolnet"
-version = "0.1.0"
-description = "A package for neural network interpolation"
+version = "1.0.0"
+description = "Official implementation of 'Multi-Marginal Flow Matching with Adversarially Learnt Interpolants'"
 readme = "README.md"
 authors = [
-    {name = "Kirill Tamogashev", email = "K.Tamogashev@sms.ed.ac.uk"},
-    {name = "Oskar Kviman", email = "okviman@kth.se"},
-    {name = "Nicola Branchini", email = "N.Branchini@sms.ed.ac.uk"}
+    {name = "Oskar Kviman",        email = "okviman@kth.se"},
+    {name = "Kirill Tamogashev",   email = "K.Tamogashev@sms.ed.ac.uk"},
+    {name = "Nicola Branchini",    email = "N.Branchini@sms.ed.ac.uk"}
 ]
+license = { text = "MIT" } # It's crucial to specify a license
+requires-python = ">=3.10"
+keywords = ["machine learning", "flow matching", "generative models", "computational biology"]
 
-requires-python = ">=3.7"
 dependencies = [
-    "numpy",
-    "matplotlib",
-    "torch==2.7.1",
-    "POT",
-    "scipy",
-    "scanpy",
-    "pandas",
-    "scikit-learn",
-    "torchcfm",
-    "wandb",
-    "hydra-core",
+    "click~=8.1",
+    "hydra-core~=1.3",
+    "imageio~=2.34",
+    "matplotlib~=3.8",
+    "mfm~=0.1",
+    "numpy~=2.0",
+    "omegaconf~=2.3",
+    "pandas~=2.2",
+    "POT~=0.9",
+    "scanpy~=1.9",
+    "scikit-learn~=1.5", # Corrected package name
+    "scipy~=1.13",
+    "torch~=2.3",
+    "torchcfm~=1.0",
+    "torchdyn~=1.0",
+    "tqdm~=4.66",
+    "metric-flow-matching @ git+https://github.com/kksniak/metric-flow-matching.git", # PEP 508 format
 ]
 
-[tool.setuptools]
-packages = ["ali_cfm"]
+[project.urls]
+Repository = "https://github.com/mmacosha/adversarially-learned-interpolants"
+
+[project.scripts]
+train_ali_st = "ali_cfm.scripts.train_ali_st:main"
+train_ali_tracking = "ali_cfm.scripts.train_ali_tracking:main"
+train_ali_single_cell = "ali_cfm.scripts.train_ali_single_cell:main"
+train_cfm_st = "ali_cfm.scripts.train_cfm_st:main"
+train_cfm_tracking = "ali_cfm.scripts.train_cfm_tracking:main"
+train_mfm_st = "ali_cfm.scripts.train_cfm_st:main"
+train_mfm_tracking = "ali_cfm.scripts.train_mfm_tracking:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ali_cfm*"]

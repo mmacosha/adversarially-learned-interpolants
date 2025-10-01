@@ -1,22 +1,22 @@
 import torch
 
 import os
+import wandb
 import warnings
 from tqdm.auto import trange, tqdm
 from hydra import compose, initialize
 import numpy as np
 import random
 import matplotlib.pyplot as plt
-from scipy import interpolate
+import scipy
 
 from torchdyn.core import NeuralODE
 from torchcfm.utils import torch_wrapper
 from torchcfm.conditional_flow_matching import OTPlanSampler
 
-from mnist_utils import plot_fn
-from ali_cfm.nets import MLP, RotationCFM, CorrectionUNet, UNetCFM
+from ali_cfm.nets import MLP
+from ali_cfm.cell_tracking.utils import CellOverlayViewer
 from ali_cfm.data_utils import get_dataset, denormalize, denormalize_gradfield
-from ali_cfm.loggin_and_metrics import compute_emd
 
 
 def fix_seed(seed: int = 42):
@@ -87,16 +87,14 @@ def train_ot_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epoc
     t_max = max(times)
     times_np = np.array(times) / t_max
     times = torch.tensor(times, dtype=torch.float32).to(device) / t_max
-    test_times_np = np.arange(17, dtype=np.float32) / 16.
-    test_times = torch.tensor(test_times_np, dtype=torch.float32).to(device)
     losses = []
 
     if ot == "ot":
         X = couple_across_time_sampled(X, times, device)
 
     X = X.permute(1, 0, 2)
-    t = test_times.view(-1, 1)
-    # t = torch.linspace(0, 1, 100, device=device).view(-1, 1)
+    # t = times.view(-1, 1)
+    t = torch.linspace(0, 1, 1000, device=device).view(-1, 1)
     if interpolant == 'linear':
         idx = torch.bucketize(t.squeeze(-1), times) - 1
         idx = idx.clamp(0, X.shape[0] - 2)
@@ -117,27 +115,50 @@ def train_ot_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epoc
         y = X.detach().cpu().numpy()
         x = times.detach().cpu().numpy()  # (K,)
 
-        # vectorized spline fit over (n, D)
-        splines = interpolate.CubicSpline(x, y, axis=0)  # no loops
+        # vectorized spline fit over (n, 2)
+        splines = scipy.interpolate.CubicSpline(x, y, axis=0)  # no loops
 
         t_np = t.squeeze(-1).detach().cpu().numpy()  # (T,)
-        xt = splines(t_np)  # (T, n, D)   interpolated positions
+        xt = splines(t_np)  # (T, n, 2)   interpolated positions
 
         title = f"Cubic Splines Interpolants ($K=${times.shape[0]})"
-    img_dim = int(np.sqrt(xt.shape[-1]))
-    fig, ax = plt.subplots(2, len(test_times_np) // 2, figsize=(15, 3))
-    row, col = 0, 0
-    for i, t_ in enumerate(test_times_np[:-1]):
-        x = xt[i]
-        ax[row, col].imshow(x[0].reshape(img_dim, img_dim), cmap='gray')
-        ax[row, col].set_title(f"t={360 * test_times_np[i]:.0f}°")
-        ax[row, col].axis('off')
-        col += 1
-        if col >= ax.shape[1]:
-            col = 0
-            row += 1
-    plt.show()
+    plot_fn(xt_torch, None, None, t_max, data, None, device, None, times_np, None, min_max, method="ot_cfm", animate=False)
 
+    # import matplotlib as mpl
+    # from mpl_toolkits.axes_grid1 import make_axes_locatable
+    # fig, ax = plt.subplots(figsize=(6, 5))
+    #
+    # x0, y0 = data[1][:, 0, 0], data[1][:, 0, 1]
+    # x1, y1 = data[1][:, -1, 0], data[1][:, -1, 1]
+    #
+    # # Combine data and assign labels
+    # X = np.concatenate([np.column_stack([x0, y0]), np.column_stack([x1, y1])])
+    # labels = np.array([0] * len(x0) + [1] * len(x1))
+    #
+    # # Build a discrete 2-color colormap
+    # cmap = mpl.colors.ListedColormap(["red", "cyan"])
+    # norm = mpl.colors.BoundaryNorm(boundaries=[-0.5, 0.5, 1.5], ncolors=2)
+    #
+    # # Scatter with colormap + labels
+    # sc = ax.scatter(X[:, 0], X[:, 1], c=labels, cmap=cmap, norm=norm, s=6, alpha=1)
+    #
+    # plt.rcParams.update({'font.size': 15})
+    # # Add tight colorbar
+    # divider = make_axes_locatable(ax)
+    # cax = divider.append_axes("right", size="3%", pad=0.05)
+    # cbar = plt.colorbar(sc, cax=cax)
+    # cbar.set_ticks([0, 1])
+    # cbar.set_ticklabels([0, 1])  # or "red", "cyan" etc.
+    # cbar.set_label(r"$t$")
+    #
+    # # Axes settings
+    # ax.set_xlim(-3.5, 3.5)
+    # ax.set_ylim(-0.5, 2.5)
+    # ax.set_yticks([0.0, 0.5, 1.0, 1.5, 2.0], [0.0, 0.5, 1.0, 1.5, 2.0], fontsize=15)
+    # ax.set_xticks([-2, 0, 2], [-2, 0, 2], fontsize=15)
+    #
+    # plt.tight_layout()
+    # plt.show()
 
 
     for step in trange(n_epochs, desc="Training CFM", leave=False):
@@ -162,11 +183,10 @@ def train_ot_cfm(data, interpolant, cfm_model, cfm_optimizer, batch_size, n_epoc
             xt = torch.tensor(splines(t_np), device=device, dtype=torch.float32).squeeze(1)
             ut = torch.tensor(splines(t_np, 1), device=device, dtype=torch.float32).squeeze(1)
 
-        B, N, D = xt.shape
-        # There are B x N samples of dim D, we randomly choose one of the N for each batch element
+        B, N, D = xt.shape  # (batch_size, 10, 2)
         col_idx = torch.randint(0, N, (B, 1, 1), device=xt.device)
         xt = xt.gather(1, col_idx.expand(-1, 1, D)).squeeze(1)
-        ut = ut.gather(1, col_idx.expand(-1, 1, D)).squeeze(1)  # (batch_size, D)
+        ut = ut.gather(1, col_idx.expand(-1, 1, D)).squeeze(1)  # (batch_size, 2)
 
         vt = cfm_model(torch.cat([xt, t], dim=-1))
 
@@ -181,17 +201,21 @@ def main(cfg):
     os.environ["HYDRA_FULL_ERROR"] = '1'
     seed_list = cfg.seed_list
     warnings.filterwarnings("ignore")
+    ot_sampler = OTPlanSampler('exact', reg=0.1)
+    n_samples = 10
 
-    data, min_max = get_dataset("RotatingMNIST_train", cfg.n_data_dims, normalize=cfg.normalize_dataset)
+    data, min_max = get_dataset(cfg.dataset, cfg.n_data_dims,
+                                cfg.normalize_dataset, cfg.whiten)
     timesteps_list = [t for t in range(len(data))]
     # This code assumes that timesteps are in [0, ..., T_max]
     num_int_steps = cfg.num_int_steps_per_timestep
 
     ot_fm = "ot"
     interpolant = 'cubic'  # 'linear' or 'cubic'
+    cov = CellOverlayViewer('/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/data/PhC-C2DH-U373/01/',
+                            method=interpolant)
 
     cfm_results = {}
-    cfg.dim = data[0].shape[1]
 
     for seed in tqdm(seed_list, desc="Seeds"):
         fix_seed(seed)
@@ -199,46 +223,32 @@ def main(cfg):
 
         curr_timesteps = timesteps_list
 
-        ot_cfm_model = CorrectionUNet().to(cfg.device)
+        subset_data = [x[np.random.choice(np.arange(0, x.shape[0]), n_samples, replace=False)] for x in data]
+
+        ot_cfm_model = MLP(dim=cfg.dim, time_varying=True, w=cfg.net_hidden).to(cfg.device)
         ot_cfm_optimizer = torch.optim.Adam(ot_cfm_model.parameters(), 1e-3)
-        ot_cfm_model, losses = train_ot_cfm(data, interpolant, ot_cfm_model, ot_cfm_optimizer, cfg.batch_size,
+        ot_cfm_model, losses = train_ot_cfm(subset_data, interpolant, ot_cfm_model, ot_cfm_optimizer, cfg.batch_size,
                                          n_epochs=cfg.n_ot_cfm_epochs, device=cfg.device, ot=ot_fm,
-                                            times=curr_timesteps, plot_fn=plot_fn, min_max=min_max)
+                                            times=curr_timesteps, plot_fn=cov.plot_fn, min_max=min_max)
         plt.plot(np.array(losses)[1000:])
         plt.show()
 
         node = NeuralODE(torch_wrapper(ot_cfm_model),
                          solver="dopri5", sensitivity="adjoint").to(cfg.device)
 
-        test_data, min_max = get_dataset("RotatingMNIST_test", cfg.n_data_dims, normalize=cfg.normalize_dataset)
-        # test_data, min_max = get_dataset("RotatingMNIST_train", cfg.n_data_dims, normalize=cfg.normalize_dataset)
-        timesteps_list_test = [t for t in range(len(test_data))]
-
-        X0 = torch.tensor(test_data[0], dtype=torch.float32).to(cfg.device)
-        t_s = torch.linspace(0, 1, 101)
+        X0 = torch.tensor(data[0], dtype=torch.float32).to(cfg.device)
         with torch.no_grad():
-            cfm_traj = node.trajectory(denormalize(X0, min_max),
-                                       t_s
-                                       )
-
-        img_dim = int(np.sqrt(cfg.dim))
-        fig, ax = plt.subplots(1, len(timesteps_list_test) - 1, figsize=(20, 3))
-        for i, t in enumerate(timesteps_list_test[1:]):
-            cfm_t = torch.argmin(torch.abs(t_s - t / max(timesteps_list_test)))
-            cfm_emd = compute_emd(
-                denormalize(test_data[t], min_max).to(cfg.device),
-                cfm_traj[cfm_t].float().to(cfg.device),
+            cfm_traj = node.trajectory(X0, t_span=torch.tensor(timesteps_list, dtype=torch.float32).to(cfg.device) / max(timesteps_list),
             )
-            print(f"t={t}, EMD={cfm_emd.item():.4f}")
 
-            ax[i].imshow(cfm_traj[cfm_t][0].reshape(img_dim, img_dim).cpu(), cmap='gray')
-            ax[i].set_title(f"t={360 * (t / max(timesteps_list_test)):.0f}°")
-            ax[i].axis('off')
-            cfm_results[f"seed={seed}"].append(cfm_emd.item())
+        cov.plot_fn(cfm_traj, None, None, max(timesteps_list), data,
+                    None, cfg.device, None, np.array(timesteps_list) / max(timesteps_list),
+                    None, min_max, method="ot_cfm")
+        ckpt = {"trajectory": cfm_traj}
+        torch.save(ckpt, f"/home/oskar/phd/interpolnet/Mixture-FMLs/cell_tracking/traj_ckpts/{interpolant}_traj.pt")
 
-        plt.tight_layout()
-        plt.show()
-        print(np.mean(cfm_results[f"seed={seed}"]))
+
+
 
 
 if __name__ == '__main__':

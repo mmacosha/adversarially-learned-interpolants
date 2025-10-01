@@ -17,17 +17,11 @@ external/
 
 # data folders
 data/single_cell/
-<<<<<<< HEAD
-=======
 data/MNIST/
 data/ST/nicola_data/
 artifacts_local/
 
 lightning_logs/
-
 results/
-
 cell_tracking/data/
-
 cell_tracking/exports/
->>>>>>> oskar_training_cell_tracking
