@@ -1,7 +1,7 @@
 # Multi-Marginal Flow Matching with Adversarially Learnt Interpolants
 
 <p align="center">
-    📃 <a href="https://arxiv.org/abs/" target="_blank">Paper</a>  <br>
+    📃 <a href="https://arxiv.org/abs/2510.01159" target="_blank">Paper</a>  <br>
 </p>
 
 <!-- <p align="center">
