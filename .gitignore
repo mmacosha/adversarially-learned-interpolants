@@ -1,12 +1,10 @@
 # logs and packages
 wandb/
-logs/
-checkpoints/
-training_visualizations/
-*.png
-.matplotlib_cache/
 env/
-external/
+
+# data files for single cell. They should be downloaded
+**/*.h5ad
+**/*.npz
 
 # Python aux files
 **/.DS_Store
@@ -15,13 +13,3 @@ external/
 **/.ipynb_checkpoints
 **/.vscode/
 
-# data folders
-data/single_cell/
-data/MNIST/
-data/ST/nicola_data/
-artifacts_local/
-
-lightning_logs/
-results/
-cell_tracking/data/
-cell_tracking/exports/
