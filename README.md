@@ -86,16 +86,37 @@ Baselines for the single cell experiments are run using MFM [repository](https:/
 ## Spatial transcriptomics
 
 ### Data
-TBD
+The data was originally published in [Mo et al. (2024)](https://www.nature.com/articles/s41586-024-08087-4) under a CC BY-NC-ND 4.0 license, why we only share the raw versions of the relevant dataset files here. In Mo et al., the datasets are referred to HT206B1-U2, HT206B1-U3, HT206B1-U4 and HT206B1-U5. See the ST data folder in this repo to find the necessary raw data files. In our paper, when we refer to slide one ($t=0$) we are refering to slide U2, while $t=1/3$ corresponds to U3, and so on. 
+
+To preprocess the data, go to data/st_data, and run first ```common_reference_alignment.py```, followed by ```visualize_aligned_tumor_clusters.py```. For each slide U2, ..., U5 there now exists a ```f"{slide}_tumor_coordinates.csv"``` containing the tumour coordinates in the aligned coordinate system which was used as training data, and a ```{slide}_aligned_to_{reference}.tif``` image file which can be used as sanity checks by overlaying the inferred tumour positions on the corresponding images.
+
 ### Experiments
-TBD
+```bash
+# Train ali-cfm
+train_ali_st --config configs/st/ali_st.yaml
+
+# Train OT-CFM or OT-MMFM (specified in the config)
+train_cfm_baseline_st --config configs/st/cfm_baseline_st.yaml
+```
+
 More details on running baselines for spatial transcriptomics experiments can be found in [here](/docs/TRAINING.md).
 
 ## Cell tracking 
 ### Data
-TBD
+The data can be found on this website, or explicitly via [this zip downloading address](https://data.
+celltrackingchallenge.net/training-datasets/PhC-C2DH-U373.zip). Alernatively, go to the [Cell Tracking Challenge dataset page](https://celltrackingchallenge.net/2d-datasets/) and download the training dataset in the "Glioblastoma-astrocytoma U373 cells on a polyacrylamide substrate" row. We use the frames available in folder ```01``` and the corresponding segmentation masks from folder ```01 ST/SEG```. We used the segmentation masks for cell with label four.
+
+To create the dataset used in our paper, move the zip content to data/cell_tracking/PhC-C2DH-U373, and run ```data/cell_tracking/create_dataset.py```. The segmentation masks overlayed on the cell can also be visualised using ```data/cell_tracking/visualize_single_frame.py```.
+
+
 ### Experiments
-TBD
+```bash
+# Train ali-cfm
+train_ali_cell_tracking --config configs/cell_tracking/ali_cell_tracking.yaml
+
+# Train OT-CFM (OT-MMFM not implemented!)
+train_cfm_baseline_cell_tracking --config configs/cell_tracking/cfm_baseline_cell_tracking.yaml
+```
 
 More details on running baselines for cell tracking experiments can be found in [here](/docs/TRAINING.md).
 
