@@ -127,6 +127,6 @@ Please, cite this work as follows:
     author    = {Kviman, Oskar and Tamogashev, Kirill and Branchini, Nicola and Elvira, Víctor and Lagergren, Jens and Malkin, Nikolay},
     title     = {Multi-Marginal Flow Matching with Adversarially Learnt Interpolants},
     year      = {2025},
-    notes     = {Submitted to ICLR 2026.}
+    notes     = {Published at ICLR 2026.}
 }
 ```
