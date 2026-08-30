@@ -1,7 +1,7 @@
 # Multi-Marginal Flow Matching with Adversarially Learnt Interpolants
 
 <p align="center">
-    📃 <a href="https://arxiv.org/abs/2510.01159" target="_blank">Paper</a>  <br>
+    📃 <a href="https://arxiv.org/abs/2510.01159" target="_blank">Paper (ICLR 2026)</a>  <br>
 </p>
 
 <!-- <p align="center">
@@ -10,7 +10,7 @@
 
 ---
 > **Multi-Marginal Flow Matching with Adversarially Learnt Interpolants**<br>
-> Oskar Kviman, Kirill Tamogashev, Nicola Branchini, Víctor Elvira, Jens Lagergren, Nikolay Malkin<br><br>
+> Oskar Kviman, Kirill Tamogashev, Nicola Branchini, Víctor Elvira, Jens Lagergren, Esmeralda S. Whitammer<br><br>
 >**Abstract:** Learning the dynamics of a process given sampled observations at several time points is an important but difficult task in many scientific applications. When no ground-truth trajectories are available, but one has only snapshots of data taken at discrete time steps, the problem of modelling the dynamics, and thus inferring the underlying trajectories, can be solved by multi-marginal generalisations of flow matching algorithms. This paper proposes a novel flow matching method that overcomes the limitations of existing multi-marginal trajectory inference algorithms. Our proposed method, ALI-CFM, uses a GAN-inspired adversarial loss to fit neurally parametrised interpolant curves between source and target points such that the marginal distributions at intermediate time points are close to the observed distributions. The resulting interpolants are smooth trajectories that, as we show, are unique under mild assumptions.  These interpolants are subsequently marginalised by a flow matching algorithm, yielding a trained vector field for the underlying dynamics. We showcase the versatility and scalability of our method by outperforming the existing baselines on spatial transcriptomics and cell tracking datasets, while performing on par with them on single-cell trajectory prediction.
 
 ## Project structure
@@ -121,12 +121,12 @@ train_cfm_baseline_cell_tracking --config configs/cell_tracking/cfm_baseline_cel
 More details on running baselines for cell tracking experiments can be found in [here](/docs/TRAINING.md).
 
 ## Citation
-Please, cite this work as follows:
+Please cite this work as follows:
 ```
-@misc{kviman2025adversarial,
-    author    = {Kviman, Oskar and Tamogashev, Kirill and Branchini, Nicola and Elvira, Víctor and Lagergren, Jens and Malkin, Nikolay},
+@article{kviman2025adversarial,
+    author    = {Kviman, Oskar and Tamogashev, Kirill and Branchini, Nicola and Elvira, Víctor and Lagergren, Jens and Whitammer, Esmeralda S},
     title     = {Multi-Marginal Flow Matching with Adversarially Learnt Interpolants},
-    year      = {2025},
-    notes     = {Published at ICLR 2026.}
+    year      = {2026},
+    journal     = {International Conference on Learning Representations (ICLR)}
 }
 ```
