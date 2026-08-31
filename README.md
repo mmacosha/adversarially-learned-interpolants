@@ -127,6 +127,6 @@ Please cite this work as follows:
     author    = {Kviman, Oskar and Tamogashev, Kirill and Branchini, Nicola and Elvira, Víctor and Lagergren, Jens and Whitammer, Esmeralda S},
     title     = {Multi-Marginal Flow Matching with Adversarially Learnt Interpolants},
     year      = {2026},
-    journal     = {International Conference on Learning Representations (ICLR)}
+    journal   = {International Conference on Learning Representations (ICLR)}
 }
 ```
