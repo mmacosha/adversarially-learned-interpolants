@@ -124,7 +124,7 @@ More details on running baselines for cell tracking experiments can be found in 
 Please, cite this work as follows:
 ```
 @misc{kviman2025adversarial,
-    author    = {Kviman, Oskar and Tamogashev, Kirill and Branchini, Nicola and Elvira, Víctor and Lagergren, Jens and Malkin, Nikolay},
+    author    = {Kviman, Oskar and Tamogashev, Kirill and Branchini, Nicola and Elvira, Víctor and Lagergren, Jens and Whitammer, Esmeralda},
     title     = {Multi-Marginal Flow Matching with Adversarially Learnt Interpolants},
     year      = {2025},
     notes     = {Published at ICLR 2026.}
